@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import sys
 from itertools import islice
 from pathlib import Path
 from typing import Any, TypeGuard, cast
@@ -9,7 +10,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from openai.types.responses import ResponseFunctionToolCall, ResponseInputParam
 from openai.types.responses.tool_param import ToolParam
-from pydantic import Field
+from pydantic import Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 load_dotenv()
@@ -18,23 +19,46 @@ load_dotenv()
 class Config(BaseSettings):
     """Configuration for the AI coding agent."""
 
-    model_config = SettingsConfigDict(extra="ignore", validate_default=True)
-
-    api_key: str = Field(min_length=1, validation_alias="OPENAI_API_KEY")
-    model: str = Field(
-        default="gpt-5.4-mini", min_length=1, validation_alias="OPENAI_MODEL"
+    model_config = SettingsConfigDict(
+        extra="ignore",
+        validate_default=True,
     )
-    base_url: str | None = Field(default=None, validation_alias="OPENAI_BASE_URL")
-    max_turns: int = Field(default=16, gt=0, validation_alias="MAX_TURNS_PER_RUN")
+    api_key: str = Field(
+        min_length=1,
+        validation_alias="OPENAI_API_KEY",
+    )
+    model: str = Field(
+        default="gpt-5.4-mini",
+        min_length=1,
+        validation_alias="OPENAI_MODEL",
+    )
+    base_url: str | None = Field(
+        default=None,
+        validation_alias="OPENAI_BASE_URL",
+    )
+    max_turns: int = Field(
+        default=16,
+        gt=0,
+        validation_alias="MAX_TURNS_PER_RUN",
+    )
     command_timeout: int = Field(
-        default=30, gt=0, validation_alias="COMMAND_TIMEOUT_SECONDS"
+        default=30,
+        gt=0,
+        validation_alias="COMMAND_TIMEOUT_SECONDS",
     )
     workspace_root: Path = Field(
-        default_factory=lambda: Path(__file__).resolve().parent
+        default_factory=lambda: Path(__file__).resolve().parent,
     )
 
 
-config = Config.model_validate(os.environ)
+try:
+    config = Config.model_validate(os.environ)
+except ValidationError as exc:
+    print("Configuration error:", file=sys.stderr)
+    for error in exc.errors():
+        field = ".".join(str(part) for part in error["loc"])
+        print(f"  - {field}: {error['msg']}", file=sys.stderr)
+    raise SystemExit(1) from None
 
 system_prompt = """
 You are an expert AI coding agent.
@@ -287,7 +311,10 @@ def execute_tool_call(call: ResponseFunctionToolCall) -> dict[str, Any]:
     tool_name = call.name
     tool_handler = TOOLS.get(tool_name)
     if tool_handler is None:
-        return {"ok": False, "message": f"Unknown tool: {tool_name}"}
+        return {
+            "ok": False,
+            "message": f"Unknown tool: {tool_name}",
+        }
 
     raw_arguments = call.arguments
     try:
@@ -298,7 +325,10 @@ def execute_tool_call(call: ResponseFunctionToolCall) -> dict[str, Any]:
             else raw_arguments
         )
     except (TypeError, ValueError) as exc:  # pragma: no cover - defensive path
-        return {"ok": False, "message": f"JSONDecodeError: {exc}"}
+        return {
+            "ok": False,
+            "message": f"JSONDecodeError: {exc}",
+        }
 
     # Ensure that the arguments are a dictionary before proceeding.
     if not isinstance(arguments, dict):
@@ -311,7 +341,10 @@ def execute_tool_call(call: ResponseFunctionToolCall) -> dict[str, Any]:
         # Execute the tool handler with the parsed arguments.
         return tool_handler(**arguments)
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "message": f"{type(exc).__name__}: {exc}"}
+        return {
+            "ok": False,
+            "message": f"{type(exc).__name__}: {exc}",
+        }
 
 
 def is_function_tool_call(item: object) -> TypeGuard[ResponseFunctionToolCall]:
@@ -320,7 +353,12 @@ def is_function_tool_call(item: object) -> TypeGuard[ResponseFunctionToolCall]:
 
 def run_turn(client: OpenAI, history: ResponseInputParam, prompt: str) -> None:
     """Run one user turn, handling function calls until the model responds with a final answer."""
-    history.append({"role": "user", "content": prompt})
+    history.append(
+        {
+            "role": "user",
+            "content": prompt,
+        }
+    )
 
     for turn in range(1, config.max_turns + 1):
         with client.responses.stream(
@@ -392,7 +430,7 @@ def main() -> None:
 
     print(
         f"AI coding agent started | model: {config.model} | "
-        f"workspace: {config.workspace_root}\nType 'exit' or 'quit' to stop.\n"
+        f"workspace: {config.workspace_root}\nType 'exit' or 'quit' to stop."
     )
 
     while True:
@@ -408,6 +446,7 @@ def main() -> None:
             break
 
         try:
+            print()
             run_turn(client, history, prompt)
         except Exception as exc:  # noqa: BLE001
             print(f"Agent error: {type(exc).__name__}: {exc}")
