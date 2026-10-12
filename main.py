@@ -1,25 +1,25 @@
 import json
-import os
 import subprocess
 import sys
 from itertools import islice
 from pathlib import Path
 from typing import Any, TypeGuard, cast
 
-from dotenv import load_dotenv
 from openai import OpenAI
 from openai.types.responses import ResponseFunctionToolCall, ResponseInputParam
 from openai.types.responses.tool_param import ToolParam
 from pydantic import Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-load_dotenv()
+MAX_TOOL_OUTPUT_CHARS = 40_000
+MAX_COMMAND_TIMEOUT = 600
 
 
 class Config(BaseSettings):
     """Configuration for the AI coding agent."""
 
     model_config = SettingsConfigDict(
+        env_file=".env",
         extra="ignore",
         validate_default=True,
     )
@@ -52,7 +52,7 @@ class Config(BaseSettings):
 
 
 try:
-    config = Config.model_validate(os.environ)
+    config = Config()
 except ValidationError as exc:
     print("Configuration error:", file=sys.stderr)
     for error in exc.errors():
@@ -87,6 +87,14 @@ def resolve_workspace_path(path: str) -> Path:
     return resolved_path
 
 
+def truncate_output(text: str) -> str:
+    """Cap tool output so large results cannot exhaust the model context."""
+    if len(text) <= MAX_TOOL_OUTPUT_CHARS:
+        return text
+    omitted = len(text) - MAX_TOOL_OUTPUT_CHARS
+    return f"{text[:MAX_TOOL_OUTPUT_CHARS]}\n... [truncated {omitted} characters]"
+
+
 def read_file(
     path: str, start_line: int | None = None, end_line: int | None = None
 ) -> dict[str, Any]:
@@ -104,7 +112,7 @@ def read_file(
     with file_path.open(encoding="utf-8") as file:
         content = "".join(islice(file, first_line - 1, end_line))
 
-    return {"ok": True, "content": content}
+    return {"ok": True, "content": truncate_output(content)}
 
 
 def write_file(path: str, content: str, append: bool = False) -> dict[str, Any]:
@@ -112,7 +120,7 @@ def write_file(path: str, content: str, append: bool = False) -> dict[str, Any]:
     file_path = resolve_workspace_path(path)
     file_path.parent.mkdir(parents=True, exist_ok=True)
     mode = "a" if append else "w"
-    with file_path.open(mode, encoding="utf-8") as file:
+    with file_path.open(mode, encoding="utf-8", newline="") as file:
         file.write(content)
 
     operation = "appended" if append else "written"
@@ -158,10 +166,13 @@ def run_command(
     timeout = config.command_timeout if timeout is None else timeout
     if timeout <= 0:
         raise ValueError("timeout must be greater than zero")
+    timeout = min(timeout, MAX_COMMAND_TIMEOUT)
 
     working_directory = resolve_workspace_path(cwd or str(config.workspace_root))
     if not working_directory.is_dir():
-        raise ValueError(f"Command working directory is not a directory: {cwd}")
+        raise ValueError(
+            f"Command working directory is not a directory: {working_directory}"
+        )
 
     try:
         result = subprocess.run(
@@ -179,20 +190,20 @@ def run_command(
         return {
             "ok": False,
             "timed_out": True,
-            "stdout": stdout.decode(errors="replace")
-            if isinstance(stdout, bytes)
-            else stdout,
-            "stderr": stderr.decode(errors="replace")
-            if isinstance(stderr, bytes)
-            else stderr,
+            "stdout": truncate_output(
+                stdout.decode(errors="replace") if isinstance(stdout, bytes) else stdout
+            ),
+            "stderr": truncate_output(
+                stderr.decode(errors="replace") if isinstance(stderr, bytes) else stderr
+            ),
             "returncode": None,
         }
 
     return {
         "ok": result.returncode == 0,
         "timed_out": False,
-        "stdout": result.stdout,
-        "stderr": result.stderr,
+        "stdout": truncate_output(result.stdout),
+        "stderr": truncate_output(result.stderr),
         "returncode": result.returncode,
     }
 
@@ -392,8 +403,10 @@ def run_turn(client: OpenAI, history: ResponseInputParam, prompt: str) -> None:
         if not tool_calls:
             return
 
+        at_turn_limit = turn == config.max_turns
+
         for call in tool_calls:
-            if turn == config.max_turns:
+            if at_turn_limit:
                 tool_result = {
                     "ok": False,
                     "message": (
@@ -412,7 +425,7 @@ def run_turn(client: OpenAI, history: ResponseInputParam, prompt: str) -> None:
                 }
             )
 
-        if turn == config.max_turns:
+        if at_turn_limit:
             print(
                 f"\nTurn limit reached ({config.max_turns}); tool calls were skipped."
             )
@@ -439,7 +452,7 @@ def main() -> None:
         except EOFError:
             break
 
-        if not prompt:
+        if not prompt.strip():
             continue
 
         if prompt.strip().lower() in {"exit", "quit"}:
