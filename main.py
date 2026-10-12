@@ -52,7 +52,8 @@ class Config(BaseSettings):
 
 
 try:
-    config = Config()
+    # BaseSettings resolves required fields from environment sources at runtime.
+    config = Config()  # pyright: ignore[reportCallIssue]
 except ValidationError as exc:
     print("Configuration error:", file=sys.stderr)
     for error in exc.errors():
