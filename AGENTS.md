@@ -21,14 +21,26 @@ package layout or separate modules.
   must match the handler's parameters.
 - Config uses `pydantic-settings` `validation_alias`, so field names differ from
   env vars: `OPENAI_MODEL`→`model`, `MAX_TURNS_PER_RUN`→`max_turns`,
-  `COMMAND_TIMEOUT_SECONDS`→`command_timeout`. Unknown env vars are ignored.
-- `workspace_root` defaults to the current working directory (override with
-  `WORKSPACE_ROOT`); `.env` is still read from next to `main.py`. `resolve_workspace_path`
-  restricts only the file tools to it; `run_command` runs with `shell=True` and is
-  not sandboxed.
+  `COMMAND_TIMEOUT_SECONDS`→`command_timeout`, `STREAMING`→`streaming`,
+  `WORKSPACE_ROOT`→`workspace_root`. Unknown env vars are ignored.
+- Config is loaded lazily by the cached `get_config()`; there is no module-level
+  config object.
+- `workspace_root` defaults to the current working directory; `.env` is still
+  read from next to `main.py`. `resolve_workspace_path` restricts the file tools
+  and `run_command`'s `cwd` to it, but `run_command` itself runs with
+  `shell=True` and is not sandboxed.
+- `system_prompt` is a `str.format` template filled in per turn (workspace root,
+  OS, date). Literal braces in it must be doubled.
+- Tool results are capped at `MAX_TOOL_OUTPUT_BYTES`: `read_file` content, and
+  `run_command` stdout and stderr separately.
 - The response loop calls `client.responses.stream(..., store=False)` (or
   `.create` when `STREAMING=false`) and appends outputs to in-memory
   `history`; iterations are capped by `MAX_TURNS_PER_RUN`.
+- `trim_history` keeps `history` within `MAX_HISTORY_TURNS` and
+  `MAX_HISTORY_BYTES`: it drops whole older turns first, then replaces the
+  current turn's oldest tool outputs with `OMITTED_TOOL_OUTPUT`, and only then
+  drops the request. Ctrl-C during a turn restores `history` to its state
+  before the turn.
 - `.env` is gitignored but present locally, overriding the model and base URL to a
   local OpenAI-compatible endpoint. It is read by `Config` only and is not
   exported to `os.environ`. Do not print or commit secrets.
