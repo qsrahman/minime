@@ -1,6 +1,7 @@
 import inspect
 import json
 import os
+import platform
 import signal
 import subprocess
 import sys
@@ -18,9 +19,18 @@ from openai.types.responses.tool_param import ToolParam
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+try:
+    import readline  # noqa: F401  # line editing and history for input()
+except ImportError:  # not available on Windows
+    pass
+
 MAX_HISTORY_TURNS = 12
-MAX_HISTORY_BYTES = 64 * 1024
+MAX_HISTORY_BYTES = 256 * 1024
 MAX_TOOL_OUTPUT_BYTES = 16 * 1024
+OMITTED_TOOL_OUTPUT = (
+    "[Tool output omitted to fit the context budget; "
+    "call the tool again if it is still needed.]"
+)
 
 
 class Config(BaseSettings):
@@ -78,6 +88,10 @@ def get_config() -> Config:
 
 system_prompt = """
 You are an expert AI coding agent.
+
+Environment:
+- Workspace root: {workspace_root}
+- Operating system: {operating_system}
 
 Operating rules:
 - Use paths relative to the workspace root. File tools reject paths outside it.
@@ -347,6 +361,23 @@ def trim_history(history: ResponseInputParam) -> tuple[bool, bool]:
             trimmed = True
             continue
 
+        # Only the current request is left: free space by omitting its oldest
+        # tool outputs before giving up on the request.
+        oldest_output = next(
+            (
+                item
+                for item in history
+                if isinstance(item, dict)
+                and item.get("type") == "function_call_output"
+                and item.get("output") != OMITTED_TOOL_OUTPUT
+            ),
+            None,
+        )
+        if oldest_output is not None:
+            cast(dict[str, Any], oldest_output)["output"] = OMITTED_TOOL_OUTPUT
+            trimmed = True
+            continue
+
         if user_turn_starts:
             history[:] = [
                 {
@@ -367,6 +398,10 @@ def run_turn(
 ) -> None:
     """Run one user turn, handling function calls until the model responds with a final answer."""
     settings = get_config()
+    instructions = system_prompt.format(
+        workspace_root=settings.workspace_root,
+        operating_system=platform.platform(),
+    )
     previous_history = history.copy()
     history.append({"role": "user", "content": prompt})
 
@@ -384,7 +419,7 @@ def run_turn(
             if settings.streaming:
                 with client.responses.stream(
                     model=settings.model,
-                    instructions=system_prompt,
+                    instructions=instructions,
                     input=history,
                     tools=tool_schemas,
                     store=False,
@@ -396,7 +431,7 @@ def run_turn(
             else:
                 response = client.responses.create(
                     model=settings.model,
-                    instructions=system_prompt,
+                    instructions=instructions,
                     input=history,
                     tools=tool_schemas,
                     store=False,
