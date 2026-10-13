@@ -1,150 +1,34 @@
+import inspect
 import json
 import os
 import signal
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, wait
+from functools import cache
 from itertools import islice
 from pathlib import Path
-from typing import IO, Any, TypeGuard, cast
+from typing import IO, Any, cast
 
-from dotenv import load_dotenv
 from openai import OpenAI
 from openai.types.responses import ResponseFunctionToolCall, ResponseInputParam
 from openai.types.responses.tool_param import ToolParam
-from pydantic import Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 MAX_HISTORY_TURNS = 12
 MAX_HISTORY_BYTES = 64 * 1024
-MAX_COMMAND_OUTPUT_BYTES = 16 * 1024
-
-
-config: Config | None = None
-
-system_prompt = """
-You are an expert AI coding agent.
-
-Operating rules:
-- Use paths relative to the workspace root. File tools reject paths outside it.
-- Prefer the smallest correct change.
-- Validate with the smallest relevant command or check.
-- Do not make unnecessary edits or broad refactors.
-- If a tool call fails, explain the failure clearly and continue with the next best action.
-- Keep the user informed with concise progress updates when a task involves multiple steps.
-- Use the available tools to inspect, edit, and verify the code accurately.
-- Be concise and direct.
-"""
-
-tool_schemas: list[ToolParam] = [
-    {
-        "type": "function",
-        "name": "read_file",
-        "description": "Read a file, optionally limiting the result to an inclusive line range.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Path to the file to read."},
-                "start_line": {
-                    "type": ["integer", "null"],
-                    "description": "Optional 1-based first line to read.",
-                },
-                "end_line": {
-                    "type": ["integer", "null"],
-                    "description": "Optional inclusive last line to read.",
-                },
-            },
-            "required": ["path", "start_line", "end_line"],
-            "additionalProperties": False,
-        },
-        "strict": True,
-    },
-    {
-        "type": "function",
-        "name": "write_file",
-        "description": "Write content to a file, replacing it by default or appending when append is true.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "The path to the file you want to write to.",
-                },
-                "content": {
-                    "type": "string",
-                    "description": "The content you want to write.",
-                },
-                "append": {
-                    "type": "boolean",
-                    "description": "Append to the file instead of replacing its contents.",
-                },
-            },
-            "required": ["path", "content", "append"],
-            "additionalProperties": False,
-        },
-        "strict": True,
-    },
-    {
-        "type": "function",
-        "name": "edit_file",
-        "description": "Replace a unique text fragment, or replace all matches when replace_all is true.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "The path to the file to edit.",
-                },
-                "old_content": {
-                    "type": "string",
-                    "description": "The text to be replaced.",
-                },
-                "new_content": {
-                    "type": "string",
-                    "description": "The text to replace old_content with.",
-                },
-                "replace_all": {
-                    "type": "boolean",
-                    "description": "Replace every match instead of requiring exactly one.",
-                },
-            },
-            "required": ["path", "old_content", "new_content", "replace_all"],
-            "additionalProperties": False,
-        },
-        "strict": True,
-    },
-    {
-        "type": "function",
-        "name": "run_command",
-        "description": "Run a shell command, including pipes and redirects, with an optional timeout and working directory.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "cmd": {"type": "string", "description": "The shell command to run."},
-                "timeout": {
-                    "type": ["integer", "null"],
-                    "description": "Maximum execution time in seconds.",
-                },
-                "cwd": {
-                    "type": ["string", "null"],
-                    "description": "Optional working directory for the command.",
-                },
-            },
-            "required": ["cmd", "timeout", "cwd"],
-            "additionalProperties": False,
-        },
-        "strict": True,
-    },
-]
+MAX_TOOL_OUTPUT_BYTES = 16 * 1024
 
 
 class Config(BaseSettings):
     """Configuration for the AI coding agent."""
 
     model_config = SettingsConfigDict(
+        env_file=Path(__file__).parent / ".env",
         extra="ignore",
-        validate_default=True,
     )
     api_key: str = Field(
         min_length=1,
@@ -169,14 +53,19 @@ class Config(BaseSettings):
         gt=0,
         validation_alias="COMMAND_TIMEOUT_SECONDS",
     )
+    streaming: bool = Field(
+        default=True,
+        validation_alias="STREAMING",
+    )
     workspace_root: Path = Field(
-        default_factory=lambda: Path(__file__).resolve().parent,
+        default_factory=Path.cwd,
+        validation_alias="WORKSPACE_ROOT",
     )
 
 
-def load_config() -> Config:
-    """Load and validate the agent configuration for CLI startup."""
-    load_dotenv()
+@cache
+def get_config() -> Config:
+    """Load and validate the agent configuration on first use."""
     try:
         return Config()  # pyright: ignore[reportCallIssue]
     except ValidationError as exc:
@@ -187,10 +76,19 @@ def load_config() -> Config:
         raise SystemExit(1) from None
 
 
-def get_config() -> Config:
-    if config is None:
-        raise RuntimeError("Configuration has not been loaded.")
-    return config
+system_prompt = """
+You are an expert AI coding agent.
+
+Operating rules:
+- Use paths relative to the workspace root. File tools reject paths outside it.
+- Prefer the smallest correct change.
+- Validate with the smallest relevant command or check.
+- Do not make unnecessary edits or broad refactors.
+- If a tool call fails, explain the failure clearly and continue with the next best action.
+- Keep the user informed with concise progress updates when a task involves multiple steps.
+- Use the available tools to inspect, edit, and verify the code accurately.
+- Be concise and direct.
+"""
 
 
 def resolve_workspace_path(path: str) -> Path:
@@ -222,14 +120,21 @@ def read_file(
     with file_path.open(encoding="utf-8") as file:
         content = "".join(islice(file, first_line - 1, end_line))
 
-    return {
-        "ok": True,
-        "content": content,
-    }
+    encoded_content = content.encode("utf-8")
+    if len(encoded_content) > MAX_TOOL_OUTPUT_BYTES:
+        content = encoded_content[:MAX_TOOL_OUTPUT_BYTES].decode(
+            "utf-8", errors="ignore"
+        )
+        content += (
+            f"\n[content truncated after {MAX_TOOL_OUTPUT_BYTES} bytes; "
+            "use start_line and end_line to read the rest]"
+        )
+
+    return {"ok": True, "content": content}
 
 
 def write_file(path: str, content: str, append: bool = False) -> dict[str, Any]:
-    """Write content to a file, optionally appending instead of replacing it."""
+    """Write content to a file, replacing it by default or appending when append is true."""
     file_path = resolve_workspace_path(path)
     file_path.parent.mkdir(parents=True, exist_ok=True)
     mode = "a" if append else "w"
@@ -246,13 +151,12 @@ def write_file(path: str, content: str, append: bool = False) -> dict[str, Any]:
 def edit_file(
     path: str, old_content: str, new_content: str, replace_all: bool = False
 ) -> dict[str, Any]:
-    """Replace a unique text fragment, or all matches when explicitly requested."""
+    """Replace a unique text fragment, or replace all matches when replace_all is true."""
     if not old_content:
         raise ValueError("old_content must not be empty")
 
     file_path = resolve_workspace_path(path)
-    with file_path.open(encoding="utf-8", newline="") as file:
-        existing_content = file.read()
+    existing_content = file_path.read_text(encoding="utf-8", newline="")
 
     match_count = existing_content.count(old_content)
     if match_count == 0:
@@ -262,9 +166,11 @@ def edit_file(
             f"old_content must match exactly once in {path}; found {match_count} matches"
         )
 
-    updated_content = existing_content.replace(old_content, new_content)
-    with file_path.open("w", encoding="utf-8", newline="") as file:
-        file.write(updated_content)
+    file_path.write_text(
+        existing_content.replace(old_content, new_content),
+        encoding="utf-8",
+        newline="",
+    )
 
     return {
         "ok": True,
@@ -276,13 +182,13 @@ def read_bounded_output(stream: IO[Any]) -> str:
     output = bytearray()
     truncated = False
     while chunk := stream.read(8192):
-        remaining = MAX_COMMAND_OUTPUT_BYTES - len(output)
+        remaining = MAX_TOOL_OUTPUT_BYTES - len(output)
         output.extend(chunk[:remaining])
         truncated = truncated or len(chunk) > remaining
 
     result = output.decode("utf-8", errors="replace")
     if truncated:
-        result += f"\n[output truncated after {MAX_COMMAND_OUTPUT_BYTES} bytes]"
+        result += f"\n[output truncated after {MAX_TOOL_OUTPUT_BYTES} bytes]"
     return result
 
 
@@ -294,12 +200,13 @@ def kill_process_tree(process: subprocess.Popen[bytes]) -> None:
             pass
     else:
         process.kill()
+    process.wait()
 
 
 def run_command(
     cmd: str, timeout: int | None = None, cwd: str | None = None
 ) -> dict[str, Any]:
-    """Run a shell command with a timeout and an optional working directory."""
+    """Run a shell command, including pipes and redirects, with an optional timeout and working directory."""
     settings = get_config()
     timeout = settings.command_timeout if timeout is None else timeout
     if timeout <= 0:
@@ -312,6 +219,7 @@ def run_command(
     process = subprocess.Popen(
         cmd,
         shell=True,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         cwd=working_directory,
@@ -324,95 +232,97 @@ def run_command(
         stderr_future = executor.submit(read_bounded_output, process.stderr)
         deadline = time.monotonic() + timeout
         try:
-            returncode = process.wait(timeout=timeout)
-            timed_out = False
-        except subprocess.TimeoutExpired:
-            kill_process_tree(process)
-            process.wait()
-            returncode = None
-            timed_out = True
-        if not timed_out:
+            returncode: int | None = process.wait(timeout=timeout)
             _, pending = wait(
                 (stdout_future, stderr_future),
                 timeout=max(0, deadline - time.monotonic()),
             )
             if pending:
-                kill_process_tree(process)
-                process.wait()
-                returncode = None
-                timed_out = True
+                # A background child outlived the shell and still holds the pipes.
+                raise subprocess.TimeoutExpired(cmd, timeout)
+        except subprocess.TimeoutExpired:
+            kill_process_tree(process)
+            returncode = None
+        except KeyboardInterrupt:
+            kill_process_tree(process)
+            raise
         stdout = stdout_future.result()
         stderr = stderr_future.result()
 
-    if timed_out:
-        return {
-            "ok": False,
-            "timed_out": True,
-            "stdout": stdout,
-            "stderr": stderr,
-            "returncode": None,
-        }
-
     return {
         "ok": returncode == 0,
-        "timed_out": False,
+        "timed_out": returncode is None,
         "stdout": stdout,
         "stderr": stderr,
         "returncode": returncode,
     }
 
 
-TOOLS = {
-    "read_file": read_file,
-    "write_file": write_file,
-    "edit_file": edit_file,
-    "run_command": run_command,
+class ToolArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class ReadFileArguments(ToolArguments):
+    path: str = Field(description="Path to the file to read.")
+    start_line: int | None = Field(description="Optional 1-based first line to read.")
+    end_line: int | None = Field(description="Optional inclusive last line to read.")
+
+
+class WriteFileArguments(ToolArguments):
+    path: str = Field(description="The path to the file you want to write to.")
+    content: str = Field(description="The content you want to write.")
+    append: bool = Field(description="Append to the file instead of replacing it.")
+
+
+class EditFileArguments(ToolArguments):
+    path: str = Field(description="The path to the file to edit.")
+    old_content: str = Field(description="The text to be replaced.")
+    new_content: str = Field(description="The text to replace old_content with.")
+    replace_all: bool = Field(
+        description="Replace every match instead of requiring exactly one."
+    )
+
+
+class RunCommandArguments(ToolArguments):
+    cmd: str = Field(description="The shell command to run.")
+    timeout: int | None = Field(description="Maximum execution time in seconds.")
+    cwd: str | None = Field(description="Optional working directory for the command.")
+
+
+# The handler's docstring is the tool description sent to the model.
+TOOLS: dict[str, tuple[Callable[..., dict[str, Any]], type[ToolArguments]]] = {
+    "read_file": (read_file, ReadFileArguments),
+    "write_file": (write_file, WriteFileArguments),
+    "edit_file": (edit_file, EditFileArguments),
+    "run_command": (run_command, RunCommandArguments),
 }
+
+
+def build_tool_schemas() -> list[ToolParam]:
+    return [
+        {
+            "type": "function",
+            "name": name,
+            "description": inspect.getdoc(handler),
+            "parameters": arguments_model.model_json_schema(),
+            "strict": True,
+        }
+        for name, (handler, arguments_model) in TOOLS.items()
+    ]
 
 
 def execute_tool_call(call: ResponseFunctionToolCall) -> dict[str, Any]:
     """Execute a single function call and normalize failures into a result payload."""
-    tool_name = call.name
-    tool_handler = TOOLS.get(tool_name)
-    if tool_handler is None:
-        return {
-            "ok": False,
-            "message": f"Unknown tool: {tool_name}",
-        }
+    tool = TOOLS.get(call.name)
+    if tool is None:
+        return {"ok": False, "message": f"Unknown tool: {call.name}"}
 
-    raw_arguments = call.arguments
+    handler, arguments_model = tool
     try:
-        # Parse the raw arguments from JSON if they are provided as a string.
-        arguments = (
-            json.loads(raw_arguments)
-            if isinstance(raw_arguments, str)
-            else raw_arguments
-        )
-    except (TypeError, ValueError) as exc:  # pragma: no cover - defensive path
-        return {
-            "ok": False,
-            "message": f"JSONDecodeError: {exc}",
-        }
-
-    # Ensure that the arguments are a dictionary before proceeding.
-    if not isinstance(arguments, dict):
-        return {
-            "ok": False,
-            "message": f"Tool arguments for {tool_name} must be an object, got {type(arguments).__name__}",
-        }
-
-    try:
-        # Execute the tool handler with the parsed arguments.
-        return tool_handler(**arguments)
+        arguments = arguments_model.model_validate_json(call.arguments)
+        return handler(**arguments.model_dump())
     except Exception as exc:  # noqa: BLE001
-        return {
-            "ok": False,
-            "message": f"{type(exc).__name__}: {exc}",
-        }
-
-
-def is_function_tool_call(item: object) -> TypeGuard[ResponseFunctionToolCall]:
-    return isinstance(item, ResponseFunctionToolCall)
+        return {"ok": False, "message": f"{type(exc).__name__}: {exc}"}
 
 
 def trim_history(history: ResponseInputParam) -> tuple[bool, bool]:
@@ -449,92 +359,93 @@ def trim_history(history: ResponseInputParam) -> tuple[bool, bool]:
         return trimmed, False
 
 
-def run_turn(client: OpenAI, history: ResponseInputParam, prompt: str) -> None:
+def run_turn(
+    client: OpenAI,
+    history: ResponseInputParam,
+    prompt: str,
+    tool_schemas: list[ToolParam],
+) -> None:
     """Run one user turn, handling function calls until the model responds with a final answer."""
     settings = get_config()
+    previous_history = history.copy()
     history.append({"role": "user", "content": prompt})
 
-    for turn in range(1, settings.max_turns + 1):
-        trimmed, current_turn_dropped = trim_history(history)
-        if trimmed:
-            print(f"[Conversation history trimmed to fit {MAX_HISTORY_BYTES} bytes]")
-        if current_turn_dropped:
-            print("[Turn stopped because its history exceeded the context budget]")
-            return
-
-        with client.responses.stream(
-            model=settings.model,
-            instructions=system_prompt,
-            input=history,
-            tools=tool_schemas,
-            store=False,
-        ) as stream:
-            for event in stream:
-                if event.type == "response.output_text.delta":
-                    print(event.delta, end="", flush=True)
-            response = stream.get_final_response()
-
-        if response.output_text:
-            print()
-
-        if response.status == "incomplete":
-            reason = (
-                response.incomplete_details.reason
-                if response.incomplete_details
-                else "unknown"
-            )
-            print(f"[Response incomplete: {reason}]")
-            return
-
-        history.extend(cast(ResponseInputParam, response.output))
-
-        tool_calls = [item for item in response.output if is_function_tool_call(item)]
-
-        if not tool_calls:
-            trimmed, _ = trim_history(history)
+    try:
+        for _ in range(settings.max_turns):
+            trimmed, current_turn_dropped = trim_history(history)
             if trimmed:
                 print(
                     f"[Conversation history trimmed to fit {MAX_HISTORY_BYTES} bytes]"
                 )
-            return
+            if current_turn_dropped:
+                print("[Turn stopped because its history exceeded the context budget]")
+                return
 
-        for call in tool_calls:
-            if turn == settings.max_turns:
-                tool_result = {
-                    "ok": False,
-                    "message": (
-                        "Tool call skipped: maximum turns per run "
-                        f"({settings.max_turns}) reached."
-                    ),
-                }
+            if settings.streaming:
+                with client.responses.stream(
+                    model=settings.model,
+                    instructions=system_prompt,
+                    input=history,
+                    tools=tool_schemas,
+                    store=False,
+                ) as stream:
+                    for event in stream:
+                        if event.type == "response.output_text.delta":
+                            print(event.delta, end="", flush=True)
+                    response = stream.get_final_response()
             else:
-                tool_result = execute_tool_call(call)
-
-            history.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": call.call_id,
-                    "output": json.dumps({"tool_result": tool_result}),
-                }
-            )
-
-        if turn == settings.max_turns:
-            print(
-                f"\nTurn limit reached ({settings.max_turns}); tool calls were skipped."
-            )
-            trimmed, _ = trim_history(history)
-            if trimmed:
-                print(
-                    f"[Conversation history trimmed to fit {MAX_HISTORY_BYTES} bytes]"
+                response = client.responses.create(
+                    model=settings.model,
+                    instructions=system_prompt,
+                    input=history,
+                    tools=tool_schemas,
+                    store=False,
                 )
-            return
+
+            if response.output_text:
+                if settings.streaming:
+                    print()
+                else:
+                    print(response.output_text)
+
+            if response.status == "incomplete":
+                reason = (
+                    response.incomplete_details.reason
+                    if response.incomplete_details
+                    else "unknown"
+                )
+                print(f"[Response incomplete: {reason}]")
+                return
+
+            history.extend(cast(ResponseInputParam, response.output))
+
+            tool_calls = [
+                item
+                for item in response.output
+                if isinstance(item, ResponseFunctionToolCall)
+            ]
+            if not tool_calls:
+                return
+
+            for call in tool_calls:
+                history.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call.call_id,
+                        "output": json.dumps({"tool_result": execute_tool_call(call)}),
+                    }
+                )
+        print(f"\nTurn limit reached ({settings.max_turns}).")
+    except KeyboardInterrupt:
+        history[:] = previous_history
+        print("\n[Interrupted; returning to prompt]")
 
 
 def main() -> None:
     """Run the interactive REPL for the coding agent."""
-    global config
-    config = load_config()
+    config = get_config()
     history: ResponseInputParam = []
+    tool_schemas = build_tool_schemas()
 
     client = OpenAI(
         api_key=config.api_key,
@@ -549,7 +460,7 @@ def main() -> None:
     while True:
         try:
             prompt = input("> ")
-        except EOFError:
+        except KeyboardInterrupt, EOFError:
             break
 
         if not prompt:
@@ -559,12 +470,13 @@ def main() -> None:
             break
 
         try:
-            run_turn(client, history, prompt)
+            run_turn(client, history, prompt, tool_schemas)
         except Exception as exc:  # noqa: BLE001
             print(f"Agent error: {type(exc).__name__}: {exc}")
         print()
 
+    print("\nGoodbye!")
+
 
 if __name__ == "__main__":
     main()
-    print("\nGoodbye!")

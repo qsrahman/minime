@@ -37,6 +37,8 @@ Configuration can be provided through environment variables or a `.env` file:
 | `OPENAI_BASE_URL`         | No       | Provider default | Optional API-compatible endpoint.                     |
 | `MAX_TURNS_PER_RUN`       | No       | `16`             | Maximum model/tool iterations for each user request.  |
 | `COMMAND_TIMEOUT_SECONDS` | No       | `30`             | Default timeout for shell commands, in seconds.       |
+| `STREAMING`               | No       | `true`           | Print the response as it is generated.                |
+| `WORKSPACE_ROOT`          | No       | Current directory | Directory the file tools and commands are limited to. |
 
 ## Agent tools
 

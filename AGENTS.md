@@ -13,19 +13,22 @@ package layout or separate modules.
   assume `pytest` / `ruff` / `mypy` commands; ask before adding tooling.
 
 ## Conventions and gotchas
-- Adding a tool requires two edits kept in sync: the handler in `TOOLS` and the
-  matching entry in `tool_schemas`.
-- Tool schemas use OpenAI `strict: True`, so every property must appear in
-  `required` (mark optional ones nullable, e.g. `["type", "null"]`) and
-  `additionalProperties` must be `False`. Handler signatures must match.
+- Adding a tool: write the handler, a `ToolArguments` subclass for its
+  parameters, and one `TOOLS` entry. The schema is generated from the model and
+  the handler's docstring is the description sent to the model.
+- Tool schemas use OpenAI `strict: True`, so every argument field must be
+  required: declare optional ones as `X | None` with no default. Field names
+  must match the handler's parameters.
 - Config uses `pydantic-settings` `validation_alias`, so field names differ from
   env vars: `OPENAI_MODEL`→`model`, `MAX_TURNS_PER_RUN`→`max_turns`,
   `COMMAND_TIMEOUT_SECONDS`→`command_timeout`. Unknown env vars are ignored.
-- `workspace_root` is the directory containing `main.py`. `resolve_workspace_path`
+- `workspace_root` defaults to the current working directory (override with
+  `WORKSPACE_ROOT`); `.env` is still read from next to `main.py`. `resolve_workspace_path`
   restricts only the file tools to it; `run_command` runs with `shell=True` and is
   not sandboxed.
-- The response loop streams via `client.responses.stream(..., store=False)` and
-  appends outputs to in-memory `history`; iterations are capped by
-  `MAX_TURNS_PER_RUN`.
+- The response loop calls `client.responses.stream(..., store=False)` (or
+  `.create` when `STREAMING=false`) and appends outputs to in-memory
+  `history`; iterations are capped by `MAX_TURNS_PER_RUN`.
 - `.env` is gitignored but present locally, overriding the model and base URL to a
-  local OpenAI-compatible endpoint. Do not print or commit secrets.
+  local OpenAI-compatible endpoint. It is read by `Config` only and is not
+  exported to `os.environ`. Do not print or commit secrets.

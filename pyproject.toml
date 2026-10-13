@@ -1,12 +1,11 @@
 [project]
 name = "minime"
 version = "0.1.0"
-description = "A tiny AI conding agent."
+description = "A tiny AI coding agent."
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "openai>=3.26.0",
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",
-    "python-dotenv>=1.2.4",
 ]
