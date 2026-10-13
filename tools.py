@@ -85,7 +85,6 @@ def read_file(
     return {
         "ok": True,
         "content": "".join(lines),
-        "start_line": first_line,
         "next_start_line": next_start_line,
         "next_offset": next_offset,
     }

@@ -56,7 +56,6 @@ class TestReadFile:
         assert result == {
             "ok": True,
             "content": numbered.read_text(),
-            "start_line": 1,
             "next_start_line": None,
             "next_offset": None,
         }
@@ -64,7 +63,6 @@ class TestReadFile:
     def test_inclusive_range(self, numbered: Path) -> None:
         result = tools.read_file("numbers.txt", 3, 5)
         assert result["content"] == "line 3\nline 4\nline 5\n"
-        assert result["start_line"] == 3
         assert result["next_start_line"] is None
 
     def test_start_only(self, numbered: Path) -> None:
@@ -146,13 +144,11 @@ class TestReadFile:
         result = tools.read_file("big.txt")
         lines_that_fit = LIMIT // 10
         assert result["content"].count("\n") == lines_that_fit
-        assert result["start_line"] == 1
         assert result["next_start_line"] == lines_that_fit + 1
 
     def test_continuation_starts_at_the_requested_line(self, big: Path) -> None:
         result = tools.read_file("big.txt", 2000)
         assert result["content"].startswith("line 2000\n")
-        assert result["start_line"] == 2000
         assert result["next_start_line"] is None
 
     def test_range_within_the_limit_is_not_paged(self, big: Path) -> None:

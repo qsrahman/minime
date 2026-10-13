@@ -26,7 +26,7 @@ Alternatively, put `OPENAI_API_KEY=your-api-key` in a `.env` file in the MiniMe 
 
 At the `>` prompt, describe a coding task. Enter `exit` or `quit` to end the session, or `/clear` to start a new conversation without restarting. Press Ctrl-C while the agent is working to stop the current request and return to the prompt; press it at the prompt to quit. Steps the agent had already completed stay in the conversation, so you can ask it to continue.
 
-Conversation history is kept in memory for the duration of the process, limited by default to the 12 most recent requests and 64,000 tokens (see `MAX_HISTORY_TURNS` and `MAX_HISTORY_TOKENS`). The token limit covers everything sent with a request, including the instructions and tool definitions, and is checked using the token counts the model reports. After each request MiniMe prints how much of it is in use, for example `[Context: 20,208 of 64,000 tokens]`. Older requests are dropped first; if a single request is still too large, its oldest tool outputs are omitted.
+Conversation history is kept in memory for the duration of the process, limited by default to 64,000 tokens (see `MAX_HISTORY_TOKENS`). The token limit covers everything sent with a request, including the instructions and tool definitions, and is checked using the token counts the model reports. After each request MiniMe prints how much of it is in use, for example `[Context: 20,208 of 64,000 tokens, 18,944 cached]`. The cached figure is the part of the request the provider had already processed and bills at a reduced rate; it still counts toward the limit. When the limit is reached, history is cut back to three quarters of it, oldest requests first; if a single request is still too large, its oldest tool outputs are omitted. Cutting back further than strictly needed keeps the following requests cacheable, since every cut invalidates the provider's cache.
 
 To work on another project, start MiniMe from that project's directory:
 
@@ -45,8 +45,8 @@ Configuration can be provided through environment variables or the `.env` file. 
 | `OPENAI_BASE_URL`         | No       | Provider default  | Optional API-compatible endpoint.                     |
 | `MAX_TURNS_PER_RUN`       | No       | `16`              | Maximum model/tool iterations for each user request.  |
 | `COMMAND_TIMEOUT_SECONDS` | No       | `30`              | Default timeout for shell commands, in seconds.       |
-| `MAX_HISTORY_TURNS`       | No       | `12`              | Number of recent requests kept in the conversation.   |
 | `MAX_HISTORY_TOKENS`      | No       | `64000`           | Token limit for each request sent to the model.       |
+| `REASONING_EFFORT`        | No       | Model default     | `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`. |
 | `STREAMING`               | No       | `true`            | Print the response as it is generated.                |
 | `WORKSPACE_ROOT`          | No       | Current directory | Existing directory that file paths must stay inside.  |
 | `BRAVE_API_KEY`           | No       |                   | Brave Search API key. Enables the `web_search` tool.  |

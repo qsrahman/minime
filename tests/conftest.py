@@ -3,9 +3,10 @@ import threading
 from collections.abc import Callable, Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
+import httpx2
+import openai
 import pytest
 from openai.types.responses import ResponseFunctionToolCall
 
@@ -19,7 +20,7 @@ ENV_VARS = (
     "OPENAI_BASE_URL",
     "MAX_TURNS_PER_RUN",
     "COMMAND_TIMEOUT_SECONDS",
-    "MAX_HISTORY_TURNS",
+    "REASONING_EFFORT",
     "MAX_HISTORY_TOKENS",
     "STREAMING",
     "BRAVE_API_KEY",
@@ -138,82 +139,214 @@ def site() -> Iterator[Site]:
         server.server_close()
 
 
-def response(
-    text: str = "",
-    calls: tuple[ResponseFunctionToolCall, ...] | list[ResponseFunctionToolCall] = (),
+def message_item(text: str, item_id: str = "msg_1") -> dict[str, Any]:
+    return {
+        "id": item_id,
+        "type": "message",
+        "role": "assistant",
+        "status": "completed",
+        "content": [{"type": "output_text", "text": text, "annotations": []}],
+    }
+
+
+def call_item(name: str, call_id: str = "call_1", **arguments: Any) -> dict[str, Any]:
+    return {
+        "id": f"fc_{call_id}",
+        "type": "function_call",
+        "call_id": call_id,
+        "name": name,
+        "arguments": json.dumps(arguments),
+        "status": "completed",
+    }
+
+
+def reasoning_item(item_id: str = "rs_1") -> dict[str, Any]:
+    """What the API returns for a reasoning step when the request has store=False."""
+    return {
+        "id": item_id,
+        "type": "reasoning",
+        "summary": [],
+        "encrypted_content": "gAAAA-opaque-reasoning-state",
+    }
+
+
+def response_body(
+    *output: dict[str, Any],
     status: str = "completed",
     reason: str | None = None,
     input_tokens: int | None = None,
-) -> SimpleNamespace:
-    """A stand-in for an OpenAI Response with just the fields run_turn reads."""
-    output: list[Any] = list(calls)
-    if text:
-        output.append(SimpleNamespace(type="message", text=text))
-    return SimpleNamespace(
-        output_text=text,
-        status=status,
-        incomplete_details=SimpleNamespace(reason=reason) if reason else None,
-        output=output,
-        usage=SimpleNamespace(input_tokens=input_tokens) if input_tokens else None,
-    )
+    cached_tokens: int = 0,
+) -> dict[str, Any]:
+    """A Responses API reply. Usage is left out unless input_tokens is given."""
+    usage = input_tokens and {
+        "input_tokens": input_tokens,
+        "input_tokens_details": {"cached_tokens": cached_tokens},
+        "output_tokens": 7,
+        "output_tokens_details": {"reasoning_tokens": 0},
+        "total_tokens": input_tokens + 7,
+    }
+    return {
+        "id": "resp_1",
+        "object": "response",
+        "created_at": 0,
+        "status": status,
+        "error": None,
+        "incomplete_details": {"reason": reason} if reason else None,
+        "instructions": None,
+        "model": "test-model",
+        "output": list(output),
+        "parallel_tool_calls": True,
+        "temperature": 1.0,
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": 1.0,
+        "usage": usage or None,
+    }
 
 
-class FakeStream:
-    def __init__(self, final: SimpleNamespace) -> None:
-        self.final = final
-
-    def __enter__(self) -> FakeStream:
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        return None
-
-    def __iter__(self) -> Iterator[SimpleNamespace]:
-        yield SimpleNamespace(type="response.created")
-        text = self.final.output_text
-        for chunk in (text[: len(text) // 2], text[len(text) // 2 :]):
-            if chunk:
-                yield SimpleNamespace(type="response.output_text.delta", delta=chunk)
-
-    def get_final_response(self) -> SimpleNamespace:
-        return self.final
-
-
-class FakeClient:
-    """Plays back a script of responses (or exceptions) and records each request."""
-
-    def __init__(self, *script: Any) -> None:
-        self.script = list(script)
-        self.requests: list[dict[str, Any]] = []
-        self.responses = self
-
-    def _next(self, kwargs: dict[str, Any]) -> Any:
-        self.requests.append({**kwargs, "input": list(kwargs["input"])})
-        item = self.script.pop(0)
-        if isinstance(item, BaseException):
-            raise item
-        return item
-
-    def create(self, **kwargs: Any) -> Any:
-        return self._next(kwargs)
-
-    def stream(self, **kwargs: Any) -> FakeStream:
-        return FakeStream(self._next(kwargs))
-
-
-def kinds(history: list[Any]) -> list[str]:
-    """Summarise history as one short label per item."""
-    labels = []
-    for item in history:
-        if isinstance(item, dict) and "role" in item:
-            labels.append(f"user:{item['content']}")
-        elif isinstance(item, dict):
-            result = json.loads(item["output"])
-            labels.append(
-                f"output:{item['call_id']}:{'ok' if result['ok'] else result.get('message', 'failed')}"
+def stream_events(reply: dict[str, Any]) -> list[dict[str, Any]]:
+    """The event sequence the API sends when streaming this reply."""
+    events: list[dict[str, Any]] = [
+        {
+            "type": "response.created",
+            "response": reply | {"status": "in_progress", "output": [], "usage": None},
+        }
+    ]
+    for index, item in enumerate(reply["output"]):
+        at = {"output_index": index, "item_id": item["id"]}
+        if item["type"] == "message":
+            text = item["content"][0]["text"]
+            part = {"type": "output_text", "text": "", "annotations": []}
+            events += [
+                {
+                    "type": "response.output_item.added",
+                    "output_index": index,
+                    "item": item | {"content": [], "status": "in_progress"},
+                },
+                {
+                    "type": "response.content_part.added",
+                    **at,
+                    "content_index": 0,
+                    "part": part,
+                },
+                *(
+                    {
+                        "type": "response.output_text.delta",
+                        **at,
+                        "content_index": 0,
+                        "delta": chunk,
+                        "logprobs": [],
+                    }
+                    for chunk in (text[: len(text) // 2], text[len(text) // 2 :])
+                ),
+                {
+                    "type": "response.output_text.done",
+                    **at,
+                    "content_index": 0,
+                    "text": text,
+                    "logprobs": [],
+                },
+                {
+                    "type": "response.content_part.done",
+                    **at,
+                    "content_index": 0,
+                    "part": item["content"][0],
+                },
+            ]
+        elif item["type"] == "reasoning":
+            events.append(
+                {
+                    "type": "response.output_item.added",
+                    "output_index": index,
+                    "item": item | {"encrypted_content": None},
+                }
             )
-        elif isinstance(item, ResponseFunctionToolCall):
-            labels.append(f"call:{item.call_id}")
         else:
-            labels.append(item.type)
+            events += [
+                {
+                    "type": "response.output_item.added",
+                    "output_index": index,
+                    "item": item | {"arguments": "", "status": "in_progress"},
+                },
+                {
+                    "type": "response.function_call_arguments.delta",
+                    **at,
+                    "delta": item["arguments"],
+                },
+                {
+                    "type": "response.function_call_arguments.done",
+                    **at,
+                    "name": item["name"],
+                    "arguments": item["arguments"],
+                },
+            ]
+        events.append(
+            {"type": "response.output_item.done", "output_index": index, "item": item}
+        )
+    # A streamed response finishes as "completed" or "incomplete".
+    events.append({"type": f"response.{reply['status']}", "response": reply})
+    return [event | {"sequence_number": n} for n, event in enumerate(events)]
+
+
+class Api:
+    """A fake Responses endpoint behind the real OpenAI client.
+
+    `replies` is played back in order: a response_body() dict, an
+    httpx2.Response for an HTTP error, or an exception to raise mid-request.
+    `requests` records the JSON body of every request the client sent.
+    """
+
+    def __init__(self) -> None:
+        self.replies: list[Any] = []
+        self.requests: list[dict[str, Any]] = []
+        self.client = openai.OpenAI(
+            api_key="test-key",
+            base_url="http://api.test/v1",
+            max_retries=0,
+            http_client=httpx2.Client(transport=httpx2.MockTransport(self.handle)),
+        )
+
+    def handle(self, request: httpx2.Request) -> httpx2.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/v1/responses"
+        assert request.headers["authorization"] == "Bearer test-key"
+        body = json.loads(request.content)
+        self.requests.append(body)
+        reply = self.replies.pop(0)
+        if isinstance(reply, BaseException):
+            raise reply
+        if isinstance(reply, httpx2.Response):
+            return reply
+        if body.get("stream"):
+            lines = "".join(
+                f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
+                for event in stream_events(reply)
+            )
+            return httpx2.Response(
+                200, headers={"content-type": "text/event-stream"}, text=lines
+            )
+        return httpx2.Response(200, json=reply)
+
+
+@pytest.fixture
+def api() -> Api:
+    return Api()
+
+
+def kinds(items: list[Any]) -> list[str]:
+    """One short label per item, for history or for the input of a recorded request."""
+    labels = []
+    for item in items:
+        data = item if isinstance(item, dict) else item.model_dump()
+        kind = data.get("type")
+        if kind == "function_call":
+            labels.append(f"call:{data['call_id']}")
+        elif kind == "function_call_output":
+            result = json.loads(data["output"])
+            outcome = "ok" if result["ok"] else result.get("message", "failed")
+            labels.append(f"output:{data['call_id']}:{outcome}")
+        elif data.get("role") == "user":
+            labels.append(f"user:{data['content']}")
+        else:
+            labels.append(kind)
     return labels

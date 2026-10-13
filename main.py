@@ -4,13 +4,14 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, cast
 
-from openai import OpenAI
+from openai import Omit, OpenAI, omit
 from openai.types.responses import (
     EasyInputMessageParam,
     ResponseFunctionToolCall,
     ResponseInputParam,
 )
 from openai.types.responses.tool_param import ToolParam
+from openai.types.shared_params import Reasoning
 
 from config import get_config
 from tools import build_tool_schemas, execute_tool_call
@@ -22,6 +23,10 @@ except ImportError:  # not available on Windows
 
 # Used until the model reports real token counts: about four bytes per token.
 DEFAULT_TOKENS_PER_BYTE = 0.25
+# Once history passes the limit it is cut back to this share of it, not just to
+# the limit. Each cut changes the start of the prompt, which discards the
+# provider's prompt cache; cutting further leaves many requests before the next.
+TRIM_TARGET = 0.75
 INTERRUPTED_TOOL_RESULT = {
     "ok": False,
     "message": "Interrupted by the user.",
@@ -61,27 +66,24 @@ def json_bytes(value: object) -> int:
 
 
 def trim_history(history: ResponseInputParam, max_bytes: int) -> tuple[bool, bool]:
-    settings = get_config()
+    if json_bytes(history) <= max_bytes:
+        return False, False
+
     trimmed = False
-    while True:
+    target_bytes = int(max_bytes * TRIM_TARGET)
+    while json_bytes(history) > target_bytes:
         user_turn_starts = [
             index
             for index, item in enumerate(history)
             if isinstance(item, dict) and item.get("role") == "user"
         ]
-        if (
-            len(user_turn_starts) <= settings.max_history_turns
-            and json_bytes(history) <= max_bytes
-        ):
-            return trimmed, False
-
         if len(user_turn_starts) > 1:
             del history[: user_turn_starts[1]]
             trimmed = True
             continue
 
         # Only the current request is left: free space by omitting its oldest
-        # tool outputs before giving up on the request.
+        # tool outputs.
         oldest_output = next(
             (
                 item
@@ -92,22 +94,24 @@ def trim_history(history: ResponseInputParam, max_bytes: int) -> tuple[bool, boo
             ),
             None,
         )
-        if oldest_output is not None:
-            cast(dict[str, Any], oldest_output)["output"] = OMITTED_TOOL_OUTPUT
-            trimmed = True
-            continue
+        if oldest_output is None:
+            break  # nothing left that can be dropped
+        cast(dict[str, Any], oldest_output)["output"] = OMITTED_TOOL_OUTPUT
+        trimmed = True
 
-        if user_turn_starts:
-            replacement: ResponseInputParam = [
-                {
-                    "role": "user",
-                    "content": "[Previous request omitted because its history exceeded the context budget.]",
-                }
-            ]
-            history[:] = replacement if json_bytes(replacement) <= max_bytes else []
-            return True, True
-
-        return trimmed, False
+    # The request itself is over the limit: give up on it.
+    if json_bytes(history) > max_bytes and any(
+        isinstance(item, dict) and item.get("role") == "user" for item in history
+    ):
+        replacement: ResponseInputParam = [
+            {
+                "role": "user",
+                "content": "[Previous request omitted because its history exceeded the context budget.]",
+            }
+        ]
+        history[:] = replacement if json_bytes(replacement) <= max_bytes else []
+        return True, True
+    return trimmed, False
 
 
 def run_turn(
@@ -123,7 +127,12 @@ def run_turn(
     # Instructions and tool schemas go out with every request, so they count
     # against the token limit as well.
     overhead_bytes = len(instructions.encode("utf-8")) + json_bytes(tool_schemas)
+    # Left out unless configured, so endpoints without reasoning are unaffected.
+    reasoning: Reasoning | Omit = (
+        {"effort": settings.reasoning_effort} if settings.reasoning_effort else omit
+    )
     context_tokens = 0
+    cached_tokens = 0
     user_message: EasyInputMessageParam = {"role": "user", "content": prompt}
     history.append(user_message)
 
@@ -150,23 +159,33 @@ def run_turn(
                     instructions=instructions,
                     input=history,
                     tools=tool_schemas,
+                    reasoning=reasoning,
                     store=False,
                 ) as stream:
+                    incomplete = None
                     for event in stream:
                         if event.type == "response.output_text.delta":
                             print(event.delta, end="", flush=True)
-                    response = stream.get_final_response()
+                        elif event.type == "response.incomplete":
+                            # get_final_response() only knows completed responses.
+                            incomplete = event.response
+                    response = incomplete or stream.get_final_response()
             else:
                 response = client.responses.create(
                     model=settings.model,
                     instructions=instructions,
                     input=history,
                     tools=tool_schemas,
+                    reasoning=reasoning,
                     store=False,
                 )
 
             if response.usage and response.usage.input_tokens:
                 context_tokens = response.usage.input_tokens
+                # Cached tokens are part of input_tokens: they cost less but
+                # still fill the context window, so the limit counts them.
+                details = response.usage.input_tokens_details
+                cached_tokens = details.cached_tokens if details else 0
                 # Learn this model's tokens per byte from what it just counted;
                 # the bounds guard against an endpoint reporting nonsense.
                 conversation.tokens_per_byte = min(
@@ -222,22 +241,16 @@ def run_turn(
         if history and history[-1] is user_message:
             history.pop()
         if context_tokens:
+            cached = f", {cached_tokens:,} cached" if cached_tokens else ""
             print(
                 f"[Context: {context_tokens:,} of "
-                f"{settings.max_history_tokens:,} tokens]"
+                f"{settings.max_history_tokens:,} tokens{cached}]"
             )
 
 
 def main() -> None:
     """Run the interactive REPL for the coding agent."""
     settings = get_config()
-    instructions = (
-        f"{system_prompt}\n"
-        "Environment:\n"
-        f"- Workspace root: {settings.workspace_root}\n"
-        f"- Operating system: {platform.platform()}\n"
-        f"- Current date: {date.today().isoformat()}\n"
-    )
     conversation = Conversation()
     tool_schemas = build_tool_schemas()
 
@@ -269,6 +282,14 @@ def main() -> None:
             print("[Conversation cleared]\n")
             continue
 
+        # Built per turn so the date stays right in a long-running session.
+        instructions = (
+            f"{system_prompt}\n"
+            "Environment:\n"
+            f"- Workspace root: {settings.workspace_root}\n"
+            f"- Operating system: {platform.platform()}\n"
+            f"- Current date: {date.today().isoformat()}\n"
+        )
         try:
             run_turn(client, conversation, prompt, tool_schemas, instructions)
         except Exception as exc:  # noqa: BLE001

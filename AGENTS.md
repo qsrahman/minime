@@ -25,12 +25,14 @@ MiniMe is a small interactive coding agent in three flat modules (no package):
   `Config` and a temporary workspace, with `get_config` patched in `tools` and
   `main`. Change behaviour per test by assigning to `settings` fields.
 - Shared helpers there: `site` (a local HTTP server with per-test routes),
-  `FakeClient` / `response` / `tool_call` (scripted model responses), and
-  `kinds` (a one-label-per-item summary of `history`).
-- `tests/test_sdk.py` drives the real `openai` client through
-  `httpx2.MockTransport` with canned JSON and server-sent events, in both
-  streaming modes. Keep it passing when upgrading `openai`; the other loop
-  tests use stand-ins and would not notice an SDK change.
+  `api` (see below), `tool_call` (a tool call for `execute_tool_call`), and
+  `kinds` (a one-label-per-item summary of `history` or of a request's input).
+- The loop tests (`tests/test_loop.py`) run the real `openai` client: the
+  `api` fixture answers its HTTP requests through `httpx2.MockTransport` from
+  a script of `response_body(...)` replies, HTTP error responses or exceptions,
+  and records each request body. There are no stand-in response objects, so
+  these tests also catch SDK changes; keep them passing when upgrading `openai`.
+  Use the `streaming` fixture to run a test in both modes.
 - `run_command` tests need a POSIX shell and are skipped elsewhere; the timeout
   tests take one second each because the timeout is a whole number of seconds.
 
@@ -45,7 +47,7 @@ MiniMe is a small interactive coding agent in three flat modules (no package):
 - Config uses `pydantic-settings` `validation_alias`, so field names differ from
   env vars: `OPENAI_MODEL`→`model`, `MAX_TURNS_PER_RUN`→`max_turns`,
   `COMMAND_TIMEOUT_SECONDS`→`command_timeout`, `STREAMING`→`streaming`,
-  `MAX_HISTORY_TURNS`→`max_history_turns`,
+  `REASONING_EFFORT`→`reasoning_effort`,
   `MAX_HISTORY_TOKENS`→`max_history_tokens`, `WORKSPACE_ROOT`→`workspace_root`,
   `BRAVE_API_KEY`→`brave_api_key`. Unknown env vars are ignored.
 - Config is loaded lazily by the cached `get_config()`; there is no module-level
@@ -56,7 +58,7 @@ MiniMe is a small interactive coding agent in three flat modules (no package):
   tools and `run_command`'s `cwd` to it, but `run_command` itself runs with
   `shell=True` and is not sandboxed.
 - `system_prompt` is plain text; `main()` appends an Environment section
-  (workspace root, OS, date) once at startup and passes the result to
+  (workspace root, OS, date) before every turn and passes the result to
   `run_turn` as `instructions`.
 - Tool results are capped at `MAX_TOOL_OUTPUT_BYTES`, each in its own way:
   `read_file` stops at a line boundary and returns `next_start_line` (plus
@@ -90,10 +92,28 @@ MiniMe is a small interactive coding agent in three flat modules (no package):
   returns that automatically when `store=False` (checked 2026-10-13 on
   gpt-5.4-mini, gpt-5-mini and o4-mini); no `include` parameter is needed. Do
   not strip or rebuild output items before appending them to `history`.
-- `trim_history(history, max_bytes)` keeps `history` within that budget and
-  `max_history_turns`: it drops whole older turns first, then replaces the
-  current turn's oldest tool outputs with `OMITTED_TOOL_OUTPUT`, and only then
-  drops the request.
+- `trim_history(history, max_bytes)` does nothing until `history` exceeds the
+  budget, then cuts it back to `TRIM_TARGET` (75%) of it: whole older turns
+  first, then the current turn's oldest tool outputs (replaced with
+  `OMITTED_TOOL_OUTPUT`). The request itself is dropped only if it alone
+  exceeds the budget.
+- Prompt caching (OpenAI, measured 2026-10-13 on gpt-5.4-mini; works with
+  `store=False`): a request's prefix is cached from 1,024 tokens, and only an
+  exact prefix match hits. Consequences that the code depends on:
+  - Cached tokens are a subset of `usage.input_tokens` and still fill the
+    context window, so the token limit counts them; they are only reported.
+  - Any change near the start of the prompt (a trim, an edited earlier item)
+    is a full miss, which is why trimming cuts to 75% instead of to the limit
+    (cache hits over a 14-turn run at the limit went from 24% to 53%).
+  - `system_prompt` plus the tool schemas come to about 830 tokens, under the
+    minimum, so they are not cached on their own; caching starts once the
+    conversation takes the request past 1,024 tokens. Keep that part static
+    and keep per-session values in the Environment section, which `main()`
+    appends last.
+- A streamed response that stops early ends with a `response.incomplete` event
+  and the SDK's `get_final_response()` then raises, so `run_turn` takes the
+  response from that event. `reasoning` is sent only when `REASONING_EFFORT`
+  is set.
 - `run_turn` appends a model response and all of its tool outputs to `history`
   together, so history never holds a tool call without an output. On Ctrl-C or
   an API error, completed steps stay, tool calls that did not finish get

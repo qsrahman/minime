@@ -1,9 +1,6 @@
 import json
 from typing import Any
 
-import pytest
-
-import config
 import main
 
 NO_LIMIT = 10**9
@@ -46,48 +43,88 @@ def test_empty_history() -> None:
     assert history == []
 
 
-def test_oldest_turns_are_dropped_by_count(settings: config.Config) -> None:
-    settings.max_history_turns = 2
-    history = [
-        user("one"),
-        output("a", 10),
-        user("two"),
-        output("b", 10),
-        user("three"),
-    ]
-    assert main.trim_history(history, NO_LIMIT) == (True, False)
-    assert sizes(history) == ["two", 10, "three"]
-
-
 def test_oldest_turns_are_dropped_by_size() -> None:
     history = [user("one"), output("a", 4000), user("two"), output("b", 4000)]
-    assert main.trim_history(history, 5000) == (True, False)
+    assert main.trim_history(history, 6000) == (True, False)
     assert sizes(history) == ["two", 4000]
 
 
-def test_several_turns_can_be_dropped_at_once(settings: config.Config) -> None:
-    settings.max_history_turns = 1
-    history = [user("one"), user("two"), user("three"), output("c", 10)]
-    assert main.trim_history(history, NO_LIMIT) == (True, False)
+def test_several_turns_can_be_dropped_at_once() -> None:
+    history = [
+        user("one"),
+        output("a", 3000),
+        user("two"),
+        output("b", 3000),
+        user("three"),
+        output("c", 10),
+    ]
+    assert main.trim_history(history, 500) == (True, False)
     assert sizes(history) == ["three", 10]
 
 
-def test_items_before_the_first_user_turn_go_with_it(settings: config.Config) -> None:
-    settings.max_history_turns = 1
-    history = [output("orphan", 10), user("one"), user("two")]
-    main.trim_history(history, NO_LIMIT)
+def test_trimming_cuts_back_to_three_quarters_of_the_limit() -> None:
+    """Dropping just enough to fit would trim again on the very next request,
+    and every trim discards the provider's prompt cache."""
+    history = [item for n in range(10) for item in (user(f"t{n}"), output("o", 900))]
+    limit = main.json_bytes(history) - 1  # one byte over
+    assert main.trim_history(history, limit) == (True, False)
+
+    assert main.json_bytes(history) <= limit * main.TRIM_TARGET
+    assert sizes(history)[0] == "t3"  # three turns dropped, not one
+    # No more is dropped than the 75% mark requires.
+    one_more = [user("t2"), output("o", 900), *history]
+    assert main.json_bytes(one_more) > limit * main.TRIM_TARGET
+
+
+def test_history_between_the_mark_and_the_limit_is_left_alone() -> None:
+    history = [user("one"), output("a", 4000), user("two"), output("b", 4000)]
+    size = main.json_bytes(history)
+    assert size > (size + 100) * main.TRIM_TARGET
+    assert main.trim_history(history, size + 100) == (False, False)
+    assert sizes(history) == ["one", 4000, "two", 4000]
+
+
+def test_room_is_left_for_later_requests_after_a_trim() -> None:
+    history = [item for n in range(10) for item in (user(f"t{n}"), output("o", 900))]
+    limit = main.json_bytes(history) - 1
+    main.trim_history(history, limit)
+    # Two more turns can be appended before anything is trimmed again.
+    for n in (10, 11):
+        history += [user(f"t{n}"), output("o", 900)]
+        assert main.trim_history(history, limit) == (False, False)
+
+
+def test_items_before_the_first_user_turn_go_with_it() -> None:
+    history = [output("orphan", 3000), user("one"), user("two")]
+    main.trim_history(history, 200)
     assert sizes(history) == ["two"]
 
 
 def test_current_turn_sheds_its_oldest_tool_outputs() -> None:
     history = [user("go"), output("a", 3000), output("b", 3000), output("c", 3000)]
-    assert main.trim_history(history, 7000) == (True, False)
+    assert main.trim_history(history, 8800) == (True, False)
     assert sizes(history) == ["go", "OMITTED", 3000, 3000]
+
+
+def test_tool_outputs_are_also_cut_back_to_the_mark() -> None:
+    history = [user("go"), *(output(f"o{n}", 1000) for n in range(10))]
+    limit = main.json_bytes(history) - 1
+    assert main.trim_history(history, limit) == (True, False)
+    assert main.json_bytes(history) <= limit * main.TRIM_TARGET
+    assert sizes(history)[1:4] == ["OMITTED"] * 3
+    assert sizes(history)[-1] == 1000
+
+
+def test_request_above_the_mark_but_within_the_limit_is_kept() -> None:
+    """The mark applies to what can be dropped; the request itself only has to fit."""
+    history = [user("p" * 4500), output("a", 1000)]
+    assert main.trim_history(history, 5000) == (True, False)
+    assert sizes(history) == ["p" * 4500, "OMITTED"]
 
 
 def test_older_turns_go_before_current_tool_outputs() -> None:
     history = [user("old"), output("a", 4000), user("new"), output("b", 4000)]
-    main.trim_history(history, 5000)
+    main.trim_history(history, 6000)
     assert sizes(history) == ["new", 4000]
 
 
@@ -131,20 +168,24 @@ def test_non_dict_items_are_counted() -> None:
     assert history == [user("new")]
 
 
-def test_trimming_mutates_the_same_list(settings: config.Config) -> None:
-    settings.max_history_turns = 1
-    history = [user("one"), user("two")]
+def test_trimming_mutates_the_same_list() -> None:
+    history = [user("x" * 3000), user("two")]
     alias = history
-    main.trim_history(history, NO_LIMIT)
+    main.trim_history(history, 500)
     assert alias is history
     assert alias == [user("two")]
 
 
-@pytest.mark.parametrize("turns", [1, 3])
-def test_turn_limit_boundary(settings: config.Config, turns: int) -> None:
-    settings.max_history_turns = turns
-    history = [user(str(i)) for i in range(turns)]
+def test_limit_is_inclusive() -> None:
+    history = [user("old"), user("new")]
+    size = main.json_bytes(history)
+    assert main.trim_history(history, size) == (False, False)
+    assert main.trim_history(history, size - 1) == (True, False)
+    assert history == [user("new")]
+
+
+def test_many_long_turns_are_kept_when_they_fit() -> None:
+    """There is no cap on the number of turns, only on their total size."""
+    history = [user(f"turn {i}") for i in range(200)]
     assert main.trim_history(history, NO_LIMIT) == (False, False)
-    history.append(user("extra"))
-    assert main.trim_history(history, NO_LIMIT) == (True, False)
-    assert len(history) == turns
+    assert len(history) == 200

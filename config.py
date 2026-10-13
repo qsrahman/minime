@@ -2,6 +2,7 @@ import sys
 from functools import cache
 from pathlib import Path
 
+from openai.types.shared import ReasoningEffort
 from pydantic import DirectoryPath, Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -36,15 +37,14 @@ class Config(BaseSettings):
         gt=0,
         validation_alias="COMMAND_TIMEOUT_SECONDS",
     )
-    max_history_turns: int = Field(
-        default=12,
-        gt=0,
-        validation_alias="MAX_HISTORY_TURNS",
-    )
     max_history_tokens: int = Field(
         default=64_000,
         gt=0,
         validation_alias="MAX_HISTORY_TOKENS",
+    )
+    reasoning_effort: ReasoningEffort = Field(
+        default=None,
+        validation_alias="REASONING_EFFORT",
     )
     streaming: bool = Field(
         default=True,

@@ -98,7 +98,6 @@ class TestExecuteToolCall:
         assert result == {
             "ok": True,
             "content": "hello\n",
-            "start_line": 1,
             "next_start_line": None,
             "next_offset": None,
         }

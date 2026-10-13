@@ -19,7 +19,7 @@ def test_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     assert settings.base_url is None
     assert settings.max_turns == 16
     assert settings.command_timeout == 30
-    assert settings.max_history_turns == 12
+    assert settings.reasoning_effort is None
     assert settings.max_history_tokens == 64_000
     assert settings.streaming is True
     assert settings.brave_api_key is None
@@ -35,7 +35,7 @@ def test_environment_variables_map_to_fields(
         "OPENAI_BASE_URL": "http://localhost:1234/v1",
         "MAX_TURNS_PER_RUN": "3",
         "COMMAND_TIMEOUT_SECONDS": "7",
-        "MAX_HISTORY_TURNS": "4",
+        "REASONING_EFFORT": "medium",
         "MAX_HISTORY_TOKENS": "1000",
         "STREAMING": "false",
         "BRAVE_API_KEY": "brave",
@@ -50,7 +50,7 @@ def test_environment_variables_map_to_fields(
     assert settings.base_url == "http://localhost:1234/v1"
     assert settings.max_turns == 3
     assert settings.command_timeout == 7
-    assert settings.max_history_turns == 4
+    assert settings.reasoning_effort == "medium"
     assert settings.max_history_tokens == 1000
     assert settings.streaming is False
     assert settings.brave_api_key == "brave"
@@ -72,7 +72,8 @@ def test_unknown_environment_variables_are_ignored(
         ("MAX_TURNS_PER_RUN", "0"),
         ("MAX_TURNS_PER_RUN", "many"),
         ("COMMAND_TIMEOUT_SECONDS", "-1"),
-        ("MAX_HISTORY_TURNS", "0"),
+        ("REASONING_EFFORT", "extreme"),
+        ("REASONING_EFFORT", ""),
         ("MAX_HISTORY_TOKENS", "0"),
         ("STREAMING", "maybe"),
     ],
