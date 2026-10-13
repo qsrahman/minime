@@ -6,6 +6,7 @@ from typing import Any, cast
 from openai import OpenAI
 from openai.types.responses import (
     EasyInputMessageParam,
+    Response,
     ResponseFunctionToolCall,
     ResponseInputParam,
 )
@@ -87,15 +88,46 @@ def trim_history(history: ResponseInputParam) -> tuple[bool, bool]:
             continue
 
         if user_turn_starts:
-            history[:] = [
+            replacement: ResponseInputParam = [
                 {
                     "role": "user",
                     "content": "[Previous request omitted because its history exceeded the context budget.]",
                 }
             ]
+            replacement_bytes = len(
+                json.dumps(replacement, ensure_ascii=False, default=str).encode("utf-8")
+            )
+            history[:] = (
+                replacement if replacement_bytes <= settings.max_history_bytes else []
+            )
             return True, True
 
         return trimmed, False
+
+
+def record_response(history: ResponseInputParam, response: Response) -> bool:
+    tool_calls = [
+        item for item in response.output if isinstance(item, ResponseFunctionToolCall)
+    ]
+    tool_results: list[dict[str, Any]] = []
+    try:
+        for call in tool_calls:
+            tool_results.append(execute_tool_call(call))
+    finally:
+        # Keep each response step complete, even when Ctrl-C interrupts a tool.
+        tool_results.extend(
+            [INTERRUPTED_TOOL_RESULT] * (len(tool_calls) - len(tool_results))
+        )
+        history.extend(cast(ResponseInputParam, response.output))
+        history.extend(
+            {
+                "type": "function_call_output",
+                "call_id": call.call_id,
+                "output": json.dumps({"tool_result": tool_result}),
+            }
+            for call, tool_result in zip(tool_calls, tool_results)
+        )
+    return bool(tool_calls)
 
 
 def run_turn(
@@ -162,32 +194,7 @@ def run_turn(
                 print(f"[Response incomplete: {reason}]")
                 return
 
-            tool_calls = [
-                item
-                for item in response.output
-                if isinstance(item, ResponseFunctionToolCall)
-            ]
-            tool_results: list[dict[str, Any]] = []
-            try:
-                for call in tool_calls:
-                    tool_results.append(execute_tool_call(call))
-            finally:
-                # Record the whole step even when Ctrl-C cuts it short, so
-                # history never holds a tool call without its output.
-                tool_results += [INTERRUPTED_TOOL_RESULT] * (
-                    len(tool_calls) - len(tool_results)
-                )
-                history.extend(cast(ResponseInputParam, response.output))
-                history.extend(
-                    {
-                        "type": "function_call_output",
-                        "call_id": call.call_id,
-                        "output": json.dumps({"tool_result": tool_result}),
-                    }
-                    for call, tool_result in zip(tool_calls, tool_results)
-                )
-
-            if not tool_calls:
+            if not record_response(history, response):
                 return
         print(f"\nTurn limit reached ({settings.max_turns}).")
     except KeyboardInterrupt:
