@@ -33,6 +33,11 @@ MiniMe is a small interactive coding agent in three flat modules (no package):
   and records each request body. There are no stand-in response objects, so
   these tests also catch SDK changes; keep them passing when upgrading `openai`.
   Use the `streaming` fixture to run a test in both modes.
+- `tests/test_terminal.py` runs the real `main.main()` as a child process on a
+  pseudo-terminal and types Ctrl-C / Ctrl-D at it, with a local HTTP server
+  streaming scripted replies. It is the only test of real signal delivery; the
+  loop tests raise `KeyboardInterrupt` by hand. The child must be forked before
+  the server thread starts (see the `terminal` fixture). POSIX only.
 - `run_command` tests need a POSIX shell and are skipped elsewhere; the timeout
   tests take one second each because the timeout is a whole number of seconds.
 
@@ -47,7 +52,7 @@ MiniMe is a small interactive coding agent in three flat modules (no package):
 - Config uses `pydantic-settings` `validation_alias`, so field names differ from
   env vars: `OPENAI_MODEL`→`model`, `MAX_TURNS_PER_RUN`→`max_turns`,
   `COMMAND_TIMEOUT_SECONDS`→`command_timeout`, `STREAMING`→`streaming`,
-  `REASONING_EFFORT`→`reasoning_effort`,
+  `REASONING_EFFORT`→`reasoning_effort`, `SUMMARIZE`→`summarize`,
   `MAX_HISTORY_TOKENS`→`max_history_tokens`, `WORKSPACE_ROOT`→`workspace_root`,
   `BRAVE_API_KEY`→`brave_api_key`. Unknown env vars are ignored.
 - Config is loaded lazily by the cached `get_config()`; there is no module-level
@@ -118,9 +123,10 @@ MiniMe is a small interactive coding agent in three flat modules (no package):
 - `[thinking…]` is printed when a stream adds a reasoning item, so it only
   appears in streaming mode. `reasoning` is sent only when `REASONING_EFFORT`
   is set.
-- When `trim_history` drops whole turns, `run_turn` calls `summarize` and
-  inserts the result as a leading user message starting with `SUMMARY_MARKER`
-  (so a later trim folds it into the next summary). The summary request
+- When `trim_history` drops whole turns, `run_turn` calls `summarize_dropped`
+  (unless `SUMMARIZE=false`), which inserts the result as a leading user
+  message starting with `SUMMARY_MARKER` (so a later trim folds it into the
+  next summary). The summary request
   reuses the normal instructions, tools and reasoning setting with
   `tool_choice="none"` to stay on the cached prefix. A failed request falls
   back to dropping; Ctrl-C during it puts the dropped turns back; a summary

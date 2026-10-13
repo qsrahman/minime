@@ -7,7 +7,6 @@ from typing import Any, cast
 from openai import Omit, OpenAI, OpenAIError, omit
 from openai.types.responses import (
     EasyInputMessageParam,
-    Response,
     ResponseFunctionToolCall,
     ResponseInputParam,
 )
@@ -124,26 +123,48 @@ def trim_history(history: ResponseInputParam, max_bytes: int) -> tuple[bool, boo
     return trimmed, False
 
 
-def summarize(
+def summarize_dropped(
     client: OpenAI,
+    history: ResponseInputParam,
     dropped: ResponseInputParam,
+    max_bytes: int,
     tool_schemas: list[ToolParam],
     instructions: str,
     reasoning: Reasoning | Omit,
-) -> Response:
-    """Ask the model to summarise history items that are being dropped."""
-    # The same instructions, tools and reasoning setting as every other request:
-    # the dropped items were the start of the previous prompt, so the provider
-    # has nearly all of this one cached.
-    return client.responses.create(
-        model=get_config().model,
-        instructions=instructions,
-        input=[*dropped, {"role": "user", "content": SUMMARY_REQUEST}],
-        tools=tool_schemas,
-        tool_choice="none",
-        reasoning=reasoning,
-        store=False,
-    )
+) -> int:
+    """Put a model-written summary of the dropped turns at the start of history.
+
+    Returns the output tokens the summary cost.
+    """
+    print("[Summarising earlier conversation to save space…]")
+    try:
+        # The same instructions, tools and reasoning setting as every other
+        # request: the dropped items were the start of the previous prompt, so
+        # the provider has nearly all of this one cached.
+        reply = client.responses.create(
+            model=get_config().model,
+            instructions=instructions,
+            input=[*dropped, {"role": "user", "content": SUMMARY_REQUEST}],
+            tools=tool_schemas,
+            tool_choice="none",
+            reasoning=reasoning,
+            store=False,
+        )
+    except KeyboardInterrupt:
+        history[:0] = dropped
+        raise
+    except OpenAIError as exc:
+        print(f"[No summary ({type(exc).__name__}); it was dropped instead]")
+        return 0
+
+    summary = reply.output_text.strip()
+    summary_message: EasyInputMessageParam = {
+        "role": "user",
+        "content": f"{SUMMARY_MARKER}\n{summary}",
+    }
+    if summary and json_bytes([summary_message, *history]) <= max_bytes:
+        history.insert(0, summary_message)
+    return reply.usage.output_tokens if reply.usage else 0
 
 
 def run_turn(
@@ -181,29 +202,16 @@ def run_turn(
             dropped = (
                 [] if current_turn_dropped else before[: len(before) - len(history)]
             )
-            if dropped:
-                print("[Summarising earlier conversation to save space…]")
-                try:
-                    reply = summarize(
-                        client, dropped, tool_schemas, instructions, reasoning
-                    )
-                    summary = reply.output_text.strip()
-                    if reply.usage:
-                        output_tokens += reply.usage.output_tokens
-                except KeyboardInterrupt:
-                    history[:0] = dropped
-                    raise
-                except OpenAIError as exc:
-                    summary = ""
-                    print(
-                        f"[No summary ({type(exc).__name__}); it was dropped instead]"
-                    )
-                summary_message: EasyInputMessageParam = {
-                    "role": "user",
-                    "content": f"{SUMMARY_MARKER}\n{summary}",
-                }
-                if summary and json_bytes([summary_message, *history]) <= max_bytes:
-                    history.insert(0, summary_message)
+            if dropped and settings.summarize:
+                output_tokens += summarize_dropped(
+                    client,
+                    history,
+                    dropped,
+                    max_bytes,
+                    tool_schemas,
+                    instructions,
+                    reasoning,
+                )
             elif trimmed:
                 print(
                     "[Conversation history trimmed to fit "

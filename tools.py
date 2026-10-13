@@ -117,7 +117,15 @@ def edit_file(
 
     match_count = existing_content.count(old_content)
     if match_count == 0:
-        raise ValueError(f"old_content not found in {path}")
+        # The usual near miss: right text, wrong indentation or line endings.
+        hint = ""
+        squeezed = "".join(old_content.split())
+        if squeezed and squeezed in "".join(existing_content.split()):
+            hint = (
+                "; the same text is there with different whitespace (indentation, "
+                "spacing or line endings), so copy it exactly from read_file"
+            )
+        raise ValueError(f"old_content not found in {path}{hint}")
     if match_count > 1 and not replace_all:
         raise ValueError(
             f"old_content must match exactly once in {path}; found {match_count} matches"

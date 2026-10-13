@@ -300,6 +300,40 @@ class TestEditFile:
             tools.edit_file("f.txt", "beta", "x")
         assert (workspace / "f.txt").read_text() == "alpha"
 
+    HINT = "the same text is there with different whitespace"
+
+    def test_missing_text_gets_no_whitespace_hint(self, workspace: Path) -> None:
+        (workspace / "f.txt").write_text("alpha")
+        with pytest.raises(ValueError) as error:
+            tools.edit_file("f.txt", "beta", "x")
+        assert str(error.value) == "old_content not found in f.txt"
+
+    @pytest.mark.parametrize(
+        ("content", "old_content"),
+        [
+            ("def f():\n    return 1\n", "def f():\n  return 1"),  # indentation
+            ("def f():\n\treturn 1\n", "def f():\n    return 1"),  # tabs vs spaces
+            (b"a = 1\r\nb = 2\r\n", "a = 1\nb = 2"),  # line endings
+            ("x = [1,  2]\n", "x = [1, 2]"),  # spacing
+            ("one\n\ntwo\n", "one\ntwo"),  # blank line
+        ],
+    )
+    def test_whitespace_near_miss_is_pointed_out(
+        self, workspace: Path, content: str | bytes, old_content: str
+    ) -> None:
+        path = workspace / "f.py"
+        path.write_bytes(content if isinstance(content, bytes) else content.encode())
+        before = path.read_bytes()
+        with pytest.raises(ValueError, match=self.HINT):
+            tools.edit_file("f.py", old_content, "replacement")
+        assert path.read_bytes() == before
+
+    def test_whitespace_only_old_content_gets_no_hint(self, workspace: Path) -> None:
+        (workspace / "f.txt").write_text("alpha beta")
+        with pytest.raises(ValueError) as error:
+            tools.edit_file("f.txt", "\t\t", "x")
+        assert self.HINT not in str(error.value)
+
     def test_ambiguous_match_is_rejected(self, workspace: Path) -> None:
         (workspace / "f.txt").write_text("x x x")
         with pytest.raises(ValueError, match="found 3 matches"):

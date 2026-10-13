@@ -20,6 +20,7 @@ def test_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     assert settings.max_turns == 16
     assert settings.command_timeout == 30
     assert settings.reasoning_effort is None
+    assert settings.summarize is True
     assert settings.max_history_tokens == 200_000
     assert settings.streaming is True
     assert settings.brave_api_key is None
@@ -36,6 +37,7 @@ def test_environment_variables_map_to_fields(
         "MAX_TURNS_PER_RUN": "3",
         "COMMAND_TIMEOUT_SECONDS": "7",
         "REASONING_EFFORT": "medium",
+        "SUMMARIZE": "false",
         "MAX_HISTORY_TOKENS": "1000",
         "STREAMING": "false",
         "BRAVE_API_KEY": "brave",
@@ -51,6 +53,7 @@ def test_environment_variables_map_to_fields(
     assert settings.max_turns == 3
     assert settings.command_timeout == 7
     assert settings.reasoning_effort == "medium"
+    assert settings.summarize is False
     assert settings.max_history_tokens == 1000
     assert settings.streaming is False
     assert settings.brave_api_key == "brave"
@@ -74,6 +77,7 @@ def test_unknown_environment_variables_are_ignored(
         ("COMMAND_TIMEOUT_SECONDS", "-1"),
         ("REASONING_EFFORT", "extreme"),
         ("REASONING_EFFORT", ""),
+        ("SUMMARIZE", "sometimes"),
         ("MAX_HISTORY_TOKENS", "0"),
         ("STREAMING", "maybe"),
     ],

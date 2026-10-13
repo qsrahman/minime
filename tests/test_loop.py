@@ -772,6 +772,18 @@ class TestSummaries:
         assert conversation.history == [big("a"), big("b")]
         assert "[Interrupted; returning to prompt]" in capsys.readouterr().out
 
+    def test_summaries_can_be_turned_off(
+        self, api: Api, settings: config.Config, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        settings.summarize = False
+        api.replies = [answer("ok")]
+        run(api, [big("a"), big("b")])
+        assert len(api.requests) == 1
+        assert kinds(api.requests[0]["input"]) == [f"user:{'b' * 3000}", "user:new"]
+        out = capsys.readouterr().out
+        assert "Summarising" not in out
+        assert "[Conversation history trimmed to fit" in out
+
     def test_omitting_tool_outputs_needs_no_summary(
         self, api: Api, workspace: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:

@@ -46,6 +46,10 @@ class Config(BaseSettings):
         default=None,
         validation_alias="REASONING_EFFORT",
     )
+    summarize: bool = Field(
+        default=True,
+        validation_alias="SUMMARIZE",
+    )
     streaming: bool = Field(
         default=True,
         validation_alias="STREAMING",
