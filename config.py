@@ -41,10 +41,10 @@ class Config(BaseSettings):
         gt=0,
         validation_alias="MAX_HISTORY_TURNS",
     )
-    max_history_bytes: int = Field(
-        default=256 * 1024,
+    max_history_tokens: int = Field(
+        default=64_000,
         gt=0,
-        validation_alias="MAX_HISTORY_BYTES",
+        validation_alias="MAX_HISTORY_TOKENS",
     )
     streaming: bool = Field(
         default=True,

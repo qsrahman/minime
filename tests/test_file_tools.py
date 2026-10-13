@@ -58,6 +58,7 @@ class TestReadFile:
             "content": numbered.read_text(),
             "start_line": 1,
             "next_start_line": None,
+            "next_offset": None,
         }
 
     def test_inclusive_range(self, numbered: Path) -> None:
@@ -163,21 +164,84 @@ class TestReadFile:
         result = tools.read_file("big.txt", 1, 2500)
         assert result["next_start_line"] == LIMIT // 10 + 1
 
-    def test_overlong_line_is_cut_with_a_notice(self, workspace: Path) -> None:
-        (workspace / "long.txt").write_text("a\n" + "x" * (LIMIT * 2) + "\nlast\n")
+    def read_all(self, path: str) -> tuple[str, int]:
+        """Follow next_start_line / next_offset to the end; return the text and call count."""
+        parts, start, offset = [], None, None
+        while True:
+            result = tools.read_file(path, start, None, offset)
+            assert len(result["content"].encode()) <= LIMIT
+            parts.append(result["content"])
+            if result["next_start_line"] is None:
+                assert result["next_offset"] is None
+                return "".join(parts), len(parts)
+            start, offset = result["next_start_line"], result["next_offset"]
+
+    def test_overlong_line_is_returned_in_pieces(self, workspace: Path) -> None:
+        (workspace / "long.txt").write_text("a\n" + "x" * (LIMIT * 2 + 5) + "\nlast\n")
 
         first = tools.read_file("long.txt")
-        assert (first["content"], first["next_start_line"]) == ("a\n", 2)
+        assert (first["content"], first["next_start_line"], first["next_offset"]) == (
+            "a\n",
+            2,
+            None,
+        )
 
         second = tools.read_file("long.txt", 2)
-        marker = "\n[line 2 truncated; output limit reached]"
-        assert second["content"].endswith(marker)
-        assert second["content"].startswith("x" * 100)
-        assert len(second["content"].encode()) == LIMIT
-        assert second["next_start_line"] == 3
+        assert second["content"] == "x" * LIMIT
+        assert (second["next_start_line"], second["next_offset"]) == (2, LIMIT)
 
-        third = tools.read_file("long.txt", 3)
-        assert (third["content"], third["next_start_line"]) == ("last\n", None)
+        third = tools.read_file("long.txt", 2, None, LIMIT)
+        assert third["content"] == "x" * LIMIT
+        assert (third["next_start_line"], third["next_offset"]) == (2, LIMIT * 2)
+
+        # The rest of the line now fits, so reading carries on into later lines.
+        fourth = tools.read_file("long.txt", 2, None, LIMIT * 2)
+        assert fourth["content"] == "xxxxx\nlast\n"
+        assert (fourth["next_start_line"], fourth["next_offset"]) == (None, None)
+
+    def test_file_with_overlong_lines_can_be_read_completely(
+        self, workspace: Path
+    ) -> None:
+        text = "start\n" + "é" * LIMIT + "\nmiddle\n" + "z" * (LIMIT * 3) + "\nend\n"
+        (workspace / "mixed.txt").write_text(text, encoding="utf-8")
+        content, calls = self.read_all("mixed.txt")
+        assert content == text
+        assert calls > 4
+
+    def test_minified_single_line_file(self, workspace: Path) -> None:
+        text = "{" + ",".join(f'"k{i}":{i}' for i in range(8000)) + "}"
+        (workspace / "min.json").write_text(text)
+        assert len(text) > LIMIT * 4
+        assert self.read_all("min.json")[0] == text
+
+    def test_offset_within_a_short_line(self, workspace: Path) -> None:
+        (workspace / "f.txt").write_text("abcdef\nsecond\n")
+        result = tools.read_file("f.txt", 1, None, 3)
+        assert result["content"] == "def\nsecond\n"
+        assert result["next_offset"] is None
+
+    def test_offset_applies_only_to_the_first_line(self, workspace: Path) -> None:
+        (workspace / "f.txt").write_text("abcdef\nghijkl\n")
+        assert tools.read_file("f.txt", 2, None, 2)["content"] == "ijkl\n"
+
+    def test_offset_past_the_end_of_the_line(self, workspace: Path) -> None:
+        (workspace / "f.txt").write_text("abc\nnext\n")
+        assert tools.read_file("f.txt", 1, None, 99)["content"] == "next\n"
+
+    def test_negative_offset(self, workspace: Path) -> None:
+        (workspace / "f.txt").write_text("abc\n")
+        with pytest.raises(ValueError, match="offset must not be negative"):
+            tools.read_file("f.txt", 1, None, -1)
+
+    def test_overlong_line_pieces_are_cut_between_characters(
+        self, workspace: Path
+    ) -> None:
+        (workspace / "utf.txt").write_text(
+            "é" * LIMIT, encoding="utf-8"
+        )  # 2 x LIMIT bytes
+        first = tools.read_file("utf.txt")
+        assert first["content"] == "é" * (LIMIT // 2)
+        assert first["next_offset"] == LIMIT // 2  # counted in characters
 
     def test_multibyte_text_is_measured_in_bytes(self, workspace: Path) -> None:
         line = "é" * 5000 + "\n"  # 10001 bytes, so only one line fits

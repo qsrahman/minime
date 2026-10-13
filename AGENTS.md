@@ -27,6 +27,10 @@ MiniMe is a small interactive coding agent in three flat modules (no package):
 - Shared helpers there: `site` (a local HTTP server with per-test routes),
   `FakeClient` / `response` / `tool_call` (scripted model responses), and
   `kinds` (a one-label-per-item summary of `history`).
+- `tests/test_sdk.py` drives the real `openai` client through
+  `httpx2.MockTransport` with canned JSON and server-sent events, in both
+  streaming modes. Keep it passing when upgrading `openai`; the other loop
+  tests use stand-ins and would not notice an SDK change.
 - `run_command` tests need a POSIX shell and are skipped elsewhere; the timeout
   tests take one second each because the timeout is a whole number of seconds.
 
@@ -42,7 +46,7 @@ MiniMe is a small interactive coding agent in three flat modules (no package):
   env vars: `OPENAI_MODEL`→`model`, `MAX_TURNS_PER_RUN`→`max_turns`,
   `COMMAND_TIMEOUT_SECONDS`→`command_timeout`, `STREAMING`→`streaming`,
   `MAX_HISTORY_TURNS`→`max_history_turns`,
-  `MAX_HISTORY_BYTES`→`max_history_bytes`, `WORKSPACE_ROOT`→`workspace_root`,
+  `MAX_HISTORY_TOKENS`→`max_history_tokens`, `WORKSPACE_ROOT`→`workspace_root`,
   `BRAVE_API_KEY`→`brave_api_key`. Unknown env vars are ignored.
 - Config is loaded lazily by the cached `get_config()`; there is no module-level
   config object.
@@ -55,7 +59,8 @@ MiniMe is a small interactive coding agent in three flat modules (no package):
   (workspace root, OS, date) once at startup and passes the result to
   `run_turn` as `instructions`.
 - Tool results are capped at `MAX_TOOL_OUTPUT_BYTES`, each in its own way:
-  `read_file` stops at a line boundary and returns `next_start_line`;
+  `read_file` stops at a line boundary and returns `next_start_line` (plus
+  `next_offset` when a single over-long line is returned in pieces);
   `web_fetch` returns `next_offset`; `run_command` shares one limit between
   stdout and stderr (neither gets less than half) and keeps the start and end
   of a clipped stream with a note of how many bytes were omitted.
@@ -74,10 +79,21 @@ MiniMe is a small interactive coding agent in three flat modules (no package):
 - The response loop calls `client.responses.stream(..., store=False)` (or
   `.create` when `STREAMING=false`) and appends outputs to in-memory
   `history`; iterations are capped by `MAX_TURNS_PER_RUN`.
-- `trim_history` keeps `history` within the `max_history_turns` and
-  `max_history_bytes` settings: it drops whole older turns first, then replaces
-  the current turn's oldest tool outputs with `OMITTED_TOOL_OUTPUT`, and only
-  then drops the request.
+- `Conversation` (in `main.py`) holds `history` and `tokens_per_byte`. The
+  token limit is enforced in bytes: `run_turn` converts `max_history_tokens`
+  to a byte budget with that ratio (minus the instructions and tool schemas,
+  which are sent every time) and re-learns the ratio from each response's
+  `usage.input_tokens`, bounded to 0.1-1.0. `/clear` empties `history` and
+  keeps the ratio.
+- `store=False` means the API keeps nothing, so reasoning items in
+  `response.output` must be replayed with their `encrypted_content`. The API
+  returns that automatically when `store=False` (checked 2026-10-13 on
+  gpt-5.4-mini, gpt-5-mini and o4-mini); no `include` parameter is needed. Do
+  not strip or rebuild output items before appending them to `history`.
+- `trim_history(history, max_bytes)` keeps `history` within that budget and
+  `max_history_turns`: it drops whole older turns first, then replaces the
+  current turn's oldest tool outputs with `OMITTED_TOOL_OUTPUT`, and only then
+  drops the request.
 - `run_turn` appends a model response and all of its tool outputs to `history`
   together, so history never holds a tool call without an output. On Ctrl-C or
   an API error, completed steps stay, tool calls that did not finish get

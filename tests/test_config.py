@@ -20,7 +20,7 @@ def test_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     assert settings.max_turns == 16
     assert settings.command_timeout == 30
     assert settings.max_history_turns == 12
-    assert settings.max_history_bytes == 256 * 1024
+    assert settings.max_history_tokens == 64_000
     assert settings.streaming is True
     assert settings.brave_api_key is None
     assert settings.workspace_root == Path.cwd()
@@ -36,7 +36,7 @@ def test_environment_variables_map_to_fields(
         "MAX_TURNS_PER_RUN": "3",
         "COMMAND_TIMEOUT_SECONDS": "7",
         "MAX_HISTORY_TURNS": "4",
-        "MAX_HISTORY_BYTES": "1000",
+        "MAX_HISTORY_TOKENS": "1000",
         "STREAMING": "false",
         "BRAVE_API_KEY": "brave",
         "WORKSPACE_ROOT": str(tmp_path),
@@ -51,7 +51,7 @@ def test_environment_variables_map_to_fields(
     assert settings.max_turns == 3
     assert settings.command_timeout == 7
     assert settings.max_history_turns == 4
-    assert settings.max_history_bytes == 1000
+    assert settings.max_history_tokens == 1000
     assert settings.streaming is False
     assert settings.brave_api_key == "brave"
     assert settings.workspace_root == tmp_path
@@ -73,7 +73,7 @@ def test_unknown_environment_variables_are_ignored(
         ("MAX_TURNS_PER_RUN", "many"),
         ("COMMAND_TIMEOUT_SECONDS", "-1"),
         ("MAX_HISTORY_TURNS", "0"),
-        ("MAX_HISTORY_BYTES", "0"),
+        ("MAX_HISTORY_TOKENS", "0"),
         ("STREAMING", "maybe"),
     ],
 )

@@ -41,11 +41,16 @@ def resolve_workspace_path(path: str) -> Path:
 
 
 def read_file(
-    path: str, start_line: int | None = None, end_line: int | None = None
+    path: str,
+    start_line: int | None = None,
+    end_line: int | None = None,
+    offset: int | None = None,
 ) -> dict[str, Any]:
-    """Read a file, optionally limited to an inclusive line range. Long files are returned in parts: pass next_start_line as start_line to read the next part."""
+    """Read a file, optionally limited to an inclusive line range. Long files are returned in parts: to read the next part, pass next_start_line as start_line and, when it is not null, next_offset as offset."""
     if start_line is not None and start_line < 1:
         raise ValueError("start_line must be greater than zero")
+    if offset is not None and offset < 0:
+        raise ValueError("offset must not be negative")
     if end_line is not None and end_line < 1:
         raise ValueError("end_line must be greater than zero")
     if start_line is not None and end_line is not None and end_line < start_line:
@@ -57,29 +62,32 @@ def read_file(
     lines: list[str] = []
     size = 0
     next_start_line = None
+    next_offset = None
     with file_path.open(encoding="utf-8") as file:
-        for line in islice(file, first_line - 1, end_line):
+        numbered_lines = enumerate(islice(file, first_line - 1, end_line), first_line)
+        for number, line in numbered_lines:
+            if number == first_line and offset:
+                line = line[offset:]
             size += len(line.encode("utf-8"))
-            if size > MAX_TOOL_OUTPUT_BYTES and lines:
-                next_start_line = first_line + len(lines)
+            if size > MAX_TOOL_OUTPUT_BYTES:
+                next_start_line = number
+                if not lines:
+                    # A single line longer than the limit is returned in pieces.
+                    # errors="ignore" drops a character the byte limit cut in half.
+                    piece = line.encode("utf-8")[:MAX_TOOL_OUTPUT_BYTES].decode(
+                        "utf-8", errors="ignore"
+                    )
+                    lines.append(piece)
+                    next_offset = (offset or 0) + len(piece)
                 break
             lines.append(line)
 
-    content = "".join(lines)
-    if len(content.encode("utf-8")) > MAX_TOOL_OUTPUT_BYTES:
-        # Only a single line longer than the limit gets cut mid-line.
-        marker = f"\n[line {first_line} truncated; output limit reached]"
-        limit = MAX_TOOL_OUTPUT_BYTES - len(marker.encode("utf-8"))
-        # errors="ignore" drops a character that the byte limit cut in half.
-        content = (
-            content.encode("utf-8")[:limit].decode("utf-8", errors="ignore") + marker
-        )
-
     return {
         "ok": True,
-        "content": content,
+        "content": "".join(lines),
         "start_line": first_line,
         "next_start_line": next_start_line,
+        "next_offset": next_offset,
     }
 
 
@@ -450,6 +458,9 @@ class ReadFileArguments(ToolArguments):
     path: str = Field(description="Path to the file to read.")
     start_line: int | None = Field(description="Optional 1-based first line to read.")
     end_line: int | None = Field(description="Optional inclusive last line to read.")
+    offset: int | None = Field(
+        description="Optional character position within start_line to continue from."
+    )
 
 
 class WriteFileArguments(ToolArguments):

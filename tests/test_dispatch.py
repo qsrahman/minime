@@ -91,13 +91,16 @@ class TestExecuteToolCall:
     def test_success_returns_the_handler_result(self, workspace: Path) -> None:
         (workspace / "f.txt").write_text("hello\n")
         result = tools.execute_tool_call(
-            tool_call("read_file", path="f.txt", start_line=None, end_line=None)
+            tool_call(
+                "read_file", path="f.txt", start_line=None, end_line=None, offset=None
+            )
         )
         assert result == {
             "ok": True,
             "content": "hello\n",
             "start_line": 1,
             "next_start_line": None,
+            "next_offset": None,
         }
 
     def test_arguments_reach_the_handler(self, workspace: Path) -> None:
@@ -122,12 +125,21 @@ class TestExecuteToolCall:
             ("null", "model_type"),
             ('{"path": "f.txt", "start_line": null}', "missing"),
             (
-                '{"path": "f.txt", "start_line": null, "end_line": null, "extra": 1}',
+                '{"path": "f.txt", "start_line": null, "end_line": null, "offset": null, "extra": 1}',
                 "extra_forbidden",
             ),
-            ('{"path": 5, "start_line": null, "end_line": null}', "string_type"),
-            ('{"path": "f.txt", "start_line": "1", "end_line": null}', "int_type"),
-            ('{"path": "f.txt", "start_line": 1.5, "end_line": null}', "int_type"),
+            (
+                '{"path": 5, "start_line": null, "end_line": null, "offset": null}',
+                "string_type",
+            ),
+            (
+                '{"path": "f.txt", "start_line": "1", "end_line": null, "offset": null}',
+                "int_type",
+            ),
+            (
+                '{"path": "f.txt", "start_line": 1.5, "end_line": null, "offset": null}',
+                "int_type",
+            ),
         ],
     )
     def test_invalid_arguments(self, arguments: str, expected: str) -> None:
@@ -144,7 +156,13 @@ class TestExecuteToolCall:
 
     def test_handler_errors_become_results(self) -> None:
         result = tools.execute_tool_call(
-            tool_call("read_file", path="missing.txt", start_line=None, end_line=None)
+            tool_call(
+                "read_file",
+                path="missing.txt",
+                start_line=None,
+                end_line=None,
+                offset=None,
+            )
         )
         assert result["ok"] is False
         assert result["message"].startswith("FileNotFoundError:")

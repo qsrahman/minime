@@ -1,5 +1,6 @@
 import json
 import platform
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, cast
 
@@ -19,6 +20,8 @@ try:
 except ImportError:  # not available on Windows
     pass
 
+# Used until the model reports real token counts: about four bytes per token.
+DEFAULT_TOKENS_PER_BYTE = 0.25
 INTERRUPTED_TOOL_RESULT = {
     "ok": False,
     "message": "Interrupted by the user.",
@@ -45,7 +48,19 @@ Operating rules:
 """
 
 
-def trim_history(history: ResponseInputParam) -> tuple[bool, bool]:
+@dataclass
+class Conversation:
+    """The message history and how many tokens the model counts per byte of it."""
+
+    history: ResponseInputParam = field(default_factory=list)
+    tokens_per_byte: float = DEFAULT_TOKENS_PER_BYTE
+
+
+def json_bytes(value: object) -> int:
+    return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
+
+
+def trim_history(history: ResponseInputParam, max_bytes: int) -> tuple[bool, bool]:
     settings = get_config()
     trimmed = False
     while True:
@@ -54,12 +69,9 @@ def trim_history(history: ResponseInputParam) -> tuple[bool, bool]:
             for index, item in enumerate(history)
             if isinstance(item, dict) and item.get("role") == "user"
         ]
-        history_bytes = len(
-            json.dumps(history, ensure_ascii=False, default=str).encode("utf-8")
-        )
         if (
             len(user_turn_starts) <= settings.max_history_turns
-            and history_bytes <= settings.max_history_bytes
+            and json_bytes(history) <= max_bytes
         ):
             return trimmed, False
 
@@ -92,12 +104,7 @@ def trim_history(history: ResponseInputParam) -> tuple[bool, bool]:
                     "content": "[Previous request omitted because its history exceeded the context budget.]",
                 }
             ]
-            replacement_bytes = len(
-                json.dumps(replacement, ensure_ascii=False, default=str).encode("utf-8")
-            )
-            history[:] = (
-                replacement if replacement_bytes <= settings.max_history_bytes else []
-            )
+            history[:] = replacement if json_bytes(replacement) <= max_bytes else []
             return True, True
 
         return trimmed, False
@@ -105,27 +112,37 @@ def trim_history(history: ResponseInputParam) -> tuple[bool, bool]:
 
 def run_turn(
     client: OpenAI,
-    history: ResponseInputParam,
+    conversation: Conversation,
     prompt: str,
     tool_schemas: list[ToolParam],
     instructions: str = "",
 ) -> None:
     """Run one user turn, handling function calls until the model responds with a final answer."""
     settings = get_config()
+    history = conversation.history
+    # Instructions and tool schemas go out with every request, so they count
+    # against the token limit as well.
+    overhead_bytes = len(instructions.encode("utf-8")) + json_bytes(tool_schemas)
+    context_tokens = 0
     user_message: EasyInputMessageParam = {"role": "user", "content": prompt}
     history.append(user_message)
 
     try:
         for _ in range(settings.max_turns):
-            trimmed, current_turn_dropped = trim_history(history)
+            max_bytes = (
+                int(settings.max_history_tokens / conversation.tokens_per_byte)
+                - overhead_bytes
+            )
+            trimmed, current_turn_dropped = trim_history(history, max_bytes)
             if trimmed:
                 print(
                     "[Conversation history trimmed to fit "
-                    f"{settings.max_history_bytes} bytes]"
+                    f"{settings.max_history_tokens} tokens]"
                 )
             if current_turn_dropped:
                 print("[Turn stopped because its history exceeded the context budget]")
                 return
+            request_bytes = overhead_bytes + json_bytes(history)
 
             if settings.streaming:
                 with client.responses.stream(
@@ -146,6 +163,14 @@ def run_turn(
                     input=history,
                     tools=tool_schemas,
                     store=False,
+                )
+
+            if response.usage and response.usage.input_tokens:
+                context_tokens = response.usage.input_tokens
+                # Learn this model's tokens per byte from what it just counted;
+                # the bounds guard against an endpoint reporting nonsense.
+                conversation.tokens_per_byte = min(
+                    1.0, max(0.1, context_tokens / request_bytes)
                 )
 
             if response.output_text:
@@ -196,6 +221,11 @@ def run_turn(
         # A request that ended before any step completed leaves no trace.
         if history and history[-1] is user_message:
             history.pop()
+        if context_tokens:
+            print(
+                f"[Context: {context_tokens:,} of "
+                f"{settings.max_history_tokens:,} tokens]"
+            )
 
 
 def main() -> None:
@@ -208,7 +238,7 @@ def main() -> None:
         f"- Operating system: {platform.platform()}\n"
         f"- Current date: {date.today().isoformat()}\n"
     )
-    history: ResponseInputParam = []
+    conversation = Conversation()
     tool_schemas = build_tool_schemas()
 
     client = OpenAI(
@@ -218,7 +248,8 @@ def main() -> None:
 
     print(
         f"AI coding agent started | model: {settings.model} | "
-        f"workspace: {settings.workspace_root}\nType 'exit' or 'quit' to stop.\n"
+        f"workspace: {settings.workspace_root}\n"
+        "Type 'exit' or 'quit' to stop, '/clear' to start a new conversation.\n"
     )
 
     while True:
@@ -233,8 +264,13 @@ def main() -> None:
         if prompt.strip().lower() in {"exit", "quit"}:
             break
 
+        if prompt.strip().lower() == "/clear":
+            conversation.history.clear()
+            print("[Conversation cleared]\n")
+            continue
+
         try:
-            run_turn(client, history, prompt, tool_schemas, instructions)
+            run_turn(client, conversation, prompt, tool_schemas, instructions)
         except Exception as exc:  # noqa: BLE001
             print(f"Agent error: {type(exc).__name__}: {exc}")
         print()

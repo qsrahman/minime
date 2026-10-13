@@ -20,7 +20,7 @@ ENV_VARS = (
     "MAX_TURNS_PER_RUN",
     "COMMAND_TIMEOUT_SECONDS",
     "MAX_HISTORY_TURNS",
-    "MAX_HISTORY_BYTES",
+    "MAX_HISTORY_TOKENS",
     "STREAMING",
     "BRAVE_API_KEY",
     "WORKSPACE_ROOT",
@@ -143,6 +143,7 @@ def response(
     calls: tuple[ResponseFunctionToolCall, ...] | list[ResponseFunctionToolCall] = (),
     status: str = "completed",
     reason: str | None = None,
+    input_tokens: int | None = None,
 ) -> SimpleNamespace:
     """A stand-in for an OpenAI Response with just the fields run_turn reads."""
     output: list[Any] = list(calls)
@@ -153,6 +154,7 @@ def response(
         status=status,
         incomplete_details=SimpleNamespace(reason=reason) if reason else None,
         output=output,
+        usage=SimpleNamespace(input_tokens=input_tokens) if input_tokens else None,
     )
 
 

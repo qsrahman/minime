@@ -24,9 +24,9 @@ uv run main.py
 
 Alternatively, put `OPENAI_API_KEY=your-api-key` in a `.env` file in the MiniMe directory. MiniMe loads that file automatically, wherever it is started from. Do not commit your API key.
 
-At the `>` prompt, describe a coding task. Enter `exit` or `quit` to end the session. Press Ctrl-C while the agent is working to stop the current request and return to the prompt; press it at the prompt to quit. Steps the agent had already completed stay in the conversation, so you can ask it to continue.
+At the `>` prompt, describe a coding task. Enter `exit` or `quit` to end the session, or `/clear` to start a new conversation without restarting. Press Ctrl-C while the agent is working to stop the current request and return to the prompt; press it at the prompt to quit. Steps the agent had already completed stay in the conversation, so you can ask it to continue.
 
-Conversation history is kept in memory for the duration of the process, limited by default to the 12 most recent requests and 256 KB (see `MAX_HISTORY_TURNS` and `MAX_HISTORY_BYTES`). Older requests are dropped first; if a single request is still too large, its oldest tool outputs are omitted.
+Conversation history is kept in memory for the duration of the process, limited by default to the 12 most recent requests and 64,000 tokens (see `MAX_HISTORY_TURNS` and `MAX_HISTORY_TOKENS`). The token limit covers everything sent with a request, including the instructions and tool definitions, and is checked using the token counts the model reports. After each request MiniMe prints how much of it is in use, for example `[Context: 20,208 of 64,000 tokens]`. Older requests are dropped first; if a single request is still too large, its oldest tool outputs are omitted.
 
 To work on another project, start MiniMe from that project's directory:
 
@@ -46,14 +46,14 @@ Configuration can be provided through environment variables or the `.env` file. 
 | `MAX_TURNS_PER_RUN`       | No       | `16`              | Maximum model/tool iterations for each user request.  |
 | `COMMAND_TIMEOUT_SECONDS` | No       | `30`              | Default timeout for shell commands, in seconds.       |
 | `MAX_HISTORY_TURNS`       | No       | `12`              | Number of recent requests kept in the conversation.   |
-| `MAX_HISTORY_BYTES`       | No       | `262144`          | Size limit for the conversation sent to the model.    |
+| `MAX_HISTORY_TOKENS`      | No       | `64000`           | Token limit for each request sent to the model.       |
 | `STREAMING`               | No       | `true`            | Print the response as it is generated.                |
 | `WORKSPACE_ROOT`          | No       | Current directory | Existing directory that file paths must stay inside.  |
 | `BRAVE_API_KEY`           | No       |                   | Brave Search API key. Enables the `web_search` tool.  |
 
 ## Agent tools
 
-- `read_file` reads a workspace file, optionally selecting a range of lines. Long files are returned up to 16 KB at a time, in whole lines, with the line number to continue from.
+- `read_file` reads a workspace file, optionally selecting a range of lines. Long files are returned up to 16 KB at a time, in whole lines, with the line number to continue from. A single line longer than that is returned in pieces.
 - `write_file` creates or replaces a workspace file, or appends to it.
 - `edit_file` replaces a text fragment; by default, the fragment must occur exactly once.
 - `run_command` runs a shell command from the workspace, with an optional working directory and timeout. Commands get no standard input. stdout and stderr share a 16 KB limit; when a stream is clipped, its start and end are kept and the middle is omitted.
