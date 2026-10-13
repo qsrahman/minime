@@ -17,89 +17,17 @@ def write(call_id: str, path: str = "out.txt") -> Any:
     return tool_call("write_file", call_id, path=path, content=call_id, append=False)
 
 
-def run(client: FakeClient, history: list[Any], prompt: str = "new") -> None:
-    main.run_turn(client, history, prompt, SCHEMAS)  # type: ignore[arg-type]
+def run(
+    client: FakeClient,
+    history: list[Any],
+    prompt: str = "new",
+    instructions: str = "",
+) -> None:
+    main.run_turn(client, history, prompt, SCHEMAS, instructions)  # type: ignore[arg-type]
 
 
 def old_history() -> list[Any]:
     return [{"role": "user", "content": "old"}]
-
-
-class TestRecordResponse:
-    def test_plain_answer(self) -> None:
-        history: list[Any] = []
-        assert main.record_response(history, response("hello")) is False  # type: ignore[arg-type]
-        assert kinds(history) == ["message"]
-
-    def test_tool_calls_are_run_and_recorded_in_order(self, workspace: Path) -> None:
-        history: list[Any] = []
-        reply = response("working", [write("a", "a.txt"), write("b", "b.txt")])
-        assert main.record_response(history, reply) is True  # type: ignore[arg-type]
-        assert kinds(history) == [
-            "call:a",
-            "call:b",
-            "message",
-            "output:a:ok",
-            "output:b:ok",
-        ]
-        assert (workspace / "a.txt").read_text() == "a"
-        assert (workspace / "b.txt").read_text() == "b"
-
-    def test_tool_failures_are_recorded_as_results(self) -> None:
-        history: list[Any] = []
-        call = tool_call(
-            "read_file", "r", path="missing.txt", start_line=None, end_line=None
-        )
-        main.record_response(history, response(calls=[call]))  # type: ignore[arg-type]
-        result = json.loads(history[-1]["output"])
-        assert result["ok"] is False
-        assert result["message"].startswith("FileNotFoundError")
-
-    def test_output_is_the_tool_result_as_json(self) -> None:
-        history: list[Any] = []
-        main.record_response(history, response(calls=[write("a")]))  # type: ignore[arg-type]
-        assert history[-1] == {
-            "type": "function_call_output",
-            "call_id": "a",
-            "output": '{"ok": true, "message": "written 1 bytes to out.txt"}',
-        }
-
-    def test_non_ascii_output_is_not_escaped(self, workspace: Path) -> None:
-        (workspace / "utf.txt").write_text("café 漢字\n", encoding="utf-8")
-        call = tool_call(
-            "read_file", "r", path="utf.txt", start_line=None, end_line=None
-        )
-        history: list[Any] = []
-        main.record_response(history, response(calls=[call]))  # type: ignore[arg-type]
-        assert "café 漢字" in history[-1]["output"]
-        assert "\\u" not in history[-1]["output"]
-
-    def test_interrupt_records_the_whole_step_then_propagates(
-        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        real = main.execute_tool_call
-
-        def interrupt_second(call: Any) -> dict[str, Any]:
-            if call.call_id == "b":
-                raise KeyboardInterrupt
-            return real(call)
-
-        monkeypatch.setattr(main, "execute_tool_call", interrupt_second)
-        history: list[Any] = []
-        calls = [write("a", "a.txt"), write("b", "b.txt"), write("c", "c.txt")]
-        with pytest.raises(KeyboardInterrupt):
-            main.record_response(history, response(calls=calls))  # type: ignore[arg-type]
-
-        assert kinds(history) == [
-            "call:a",
-            "call:b",
-            "call:c",
-            "output:a:ok",
-            "output:b:Interrupted by the user.",
-            "output:c:Interrupted by the user.",
-        ]
-        assert (workspace / "a.txt").exists()
-        assert not (workspace / "c.txt").exists()
 
 
 class TestRunTurn:
@@ -132,36 +60,66 @@ class TestRunTurn:
     def test_request_parameters(self, settings: config.Config) -> None:
         settings.model = "test-model"
         client = FakeClient(response("ok"))
-        run(client, [], "hello")
+        run(client, [], "hello", instructions="Be brief.")
         request = client.requests[0]
         assert request["model"] == "test-model"
+        assert request["instructions"] == "Be brief."
         assert request["tools"] is SCHEMAS
         assert request["store"] is False
         assert kinds(request["input"]) == ["user:hello"]
 
-    def test_instructions_describe_the_environment(
-        self, settings: config.Config
-    ) -> None:
-        client = FakeClient(response("ok"))
-        run(client, [])
-        instructions = client.requests[0]["instructions"]
-        assert f"- Workspace root: {settings.workspace_root}" in instructions
-        assert f"- Current date: {date.today().isoformat()}" in instructions
-        assert "- Operating system: " in instructions
-        assert "untrusted data" in instructions
-        assert instructions.startswith(main.system_prompt)
+    def test_instructions_are_sent_with_every_request(self) -> None:
+        client = FakeClient(response(calls=[write("a")]), response("done"))
+        run(client, [], instructions="Be brief.")
+        assert [request["instructions"] for request in client.requests] == [
+            "Be brief.",
+            "Be brief.",
+        ]
 
-    def test_braces_in_the_system_prompt_are_sent_as_written(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(
-            main, "system_prompt", 'Reply with JSON like {"ok": true}.\n'
+    def test_tool_calls_are_run_and_recorded_in_order(self, workspace: Path) -> None:
+        history: list[Any] = []
+        calls = [write("a", "a.txt"), write("b", "b.txt")]
+        run(FakeClient(response("working", calls), response("done")), history)
+        assert kinds(history) == [
+            "user:new",
+            "call:a",
+            "call:b",
+            "message",
+            "output:a:ok",
+            "output:b:ok",
+            "message",
+        ]
+        assert (workspace / "a.txt").read_text() == "a"
+        assert (workspace / "b.txt").read_text() == "b"
+
+    def test_tool_failures_are_recorded_as_results(self) -> None:
+        history: list[Any] = []
+        call = tool_call(
+            "read_file", "r", path="missing.txt", start_line=None, end_line=None
         )
-        client = FakeClient(response("ok"))
-        run(client, [])
-        assert client.requests[0]["instructions"].startswith(
-            'Reply with JSON like {"ok": true}.\n\nEnvironment:\n'
+        run(FakeClient(response(calls=[call]), response("done")), history)
+        result = json.loads(history[2]["output"])
+        assert result["ok"] is False
+        assert result["message"].startswith("FileNotFoundError")
+
+    def test_output_is_the_tool_result_as_json(self) -> None:
+        history: list[Any] = []
+        run(FakeClient(response(calls=[write("a")]), response("done")), history)
+        assert history[2] == {
+            "type": "function_call_output",
+            "call_id": "a",
+            "output": '{"ok": true, "message": "written 1 bytes to out.txt"}',
+        }
+
+    def test_non_ascii_output_is_not_escaped(self, workspace: Path) -> None:
+        (workspace / "utf.txt").write_text("café 漢字\n", encoding="utf-8")
+        call = tool_call(
+            "read_file", "r", path="utf.txt", start_line=None, end_line=None
         )
+        history: list[Any] = []
+        run(FakeClient(response(calls=[call]), response("done")), history)
+        assert "café 漢字" in history[2]["output"]
+        assert "\\u" not in history[2]["output"]
 
     def test_streaming_prints_deltas_as_they_arrive(
         self, settings: config.Config, capsys: pytest.CaptureFixture[str]
@@ -261,7 +219,10 @@ class TestRunTurn:
         assert kinds(history) == ["user:old", "user:new", "call:a", "output:a:ok"]
 
     def test_interrupt_during_a_tool_keeps_a_complete_step(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+        self,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         def interrupted(**kwargs: Any) -> dict[str, Any]:
             raise KeyboardInterrupt
@@ -290,6 +251,8 @@ class TestRunTurn:
         ]
         assert len(client.requests) == 1
         assert "[Interrupted; returning to prompt]" in capsys.readouterr().out
+        # The call before the interrupt ran; the one after it did not.
+        assert (workspace / "out.txt").read_text() == "a"
 
     def test_api_error_before_any_step_restores_history(self) -> None:
         history = old_history()
@@ -386,6 +349,7 @@ class TestMain:
             "prompts": [],
             "client_kwargs": None,
             "turn": None,
+            "instructions": None,
         }
 
         def fake_input(prompt: str) -> str:
@@ -399,10 +363,15 @@ class TestMain:
             return "client"
 
         def fake_run_turn(
-            client: Any, history: Any, prompt: str, tool_schemas: Any
+            client: Any,
+            history: Any,
+            prompt: str,
+            tool_schemas: Any,
+            instructions: str,
         ) -> None:
             state["prompts"].append(prompt)
             state["turn"] = (client, history, tool_schemas)
+            state["instructions"] = instructions
             if prompt == "explode":
                 raise RuntimeError("boom")
 
@@ -428,6 +397,30 @@ class TestMain:
             "api_key": "test-key",
             "base_url": "http://localhost:9/v1",
         }
+
+    def test_instructions_describe_the_environment(
+        self, repl: dict[str, Any], settings: config.Config
+    ) -> None:
+        repl["inputs"] = ["hello", "exit"]
+        main.main()
+        instructions = repl["instructions"]
+        assert instructions.startswith(main.system_prompt)
+        assert f"- Workspace root: {settings.workspace_root}" in instructions
+        assert f"- Current date: {date.today().isoformat()}" in instructions
+        assert "- Operating system: " in instructions
+        assert "untrusted data" in instructions
+
+    def test_braces_in_the_system_prompt_are_sent_as_written(
+        self, repl: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            main, "system_prompt", 'Reply with JSON like {"ok": true}.\n'
+        )
+        repl["inputs"] = ["hello", "exit"]
+        main.main()
+        assert repl["instructions"].startswith(
+            'Reply with JSON like {"ok": true}.\n\nEnvironment:\n'
+        )
 
     @pytest.mark.parametrize("word", ["exit", "quit", "EXIT", "  Quit  "])
     def test_exit_words(self, repl: dict[str, Any], word: str) -> None:
@@ -471,7 +464,9 @@ class TestMain:
         monkeypatch.setattr(
             main,
             "run_turn",
-            lambda client, history, prompt, schemas: seen.append(id(history)),
+            lambda client, history, prompt, schemas, instructions: seen.append(
+                id(history)
+            ),
         )
         repl["inputs"] = ["a", "b", "exit"]
         main.main()

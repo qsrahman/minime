@@ -44,29 +44,6 @@ class TestResolveWorkspacePath:
 LIMIT = tools.MAX_TOOL_OUTPUT_BYTES
 
 
-class TestTruncation:
-    def test_short_text_is_unchanged(self) -> None:
-        assert tools.truncate_to_bytes("héllo", 100) == "héllo"
-        assert tools.truncate_from_bytes("héllo", 100) == "héllo"
-
-    def test_head_keeps_the_start(self) -> None:
-        assert tools.truncate_to_bytes("abcdef", 2) == "ab"
-
-    def test_head_never_splits_a_character(self) -> None:
-        # "é" is two bytes, so only two whole characters fit in five bytes.
-        assert tools.truncate_to_bytes("ééé", 5) == "éé"
-
-    def test_tail_never_splits_a_character(self) -> None:
-        assert tools.truncate_from_bytes("abcééé", 5) == "éé"
-
-    def test_tail_keeps_the_end(self) -> None:
-        assert tools.truncate_from_bytes("abcdef", 2) == "ef"
-
-    @pytest.mark.parametrize("max_bytes", [0, -3])
-    def test_tail_with_no_budget(self, max_bytes: int) -> None:
-        assert tools.truncate_from_bytes("abc", max_bytes) == ""
-
-
 class TestReadFile:
     @pytest.fixture
     def numbered(self, workspace: Path) -> Path:

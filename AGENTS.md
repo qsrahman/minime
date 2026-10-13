@@ -51,8 +51,9 @@ MiniMe is a small interactive coding agent in three flat modules (no package):
   `config.py`. `resolve_workspace_path` restricts the file
   tools and `run_command`'s `cwd` to it, but `run_command` itself runs with
   `shell=True` and is not sandboxed.
-- `system_prompt` is plain text; `run_turn` appends an Environment section
-  (workspace root, OS, date) to it on each turn.
+- `system_prompt` is plain text; `main()` appends an Environment section
+  (workspace root, OS, date) once at startup and passes the result to
+  `run_turn` as `instructions`.
 - Tool results are capped at `MAX_TOOL_OUTPUT_BYTES`, each in its own way:
   `read_file` stops at a line boundary and returns `next_start_line`;
   `web_fetch` returns `next_offset`; `run_command` shares one limit between

@@ -40,18 +40,6 @@ def resolve_workspace_path(path: str) -> Path:
     return resolved_path
 
 
-def truncate_to_bytes(text: str, max_bytes: int) -> str:
-    """Keep the first max_bytes of text without splitting a character."""
-    return text.encode("utf-8")[:max_bytes].decode("utf-8", errors="ignore")
-
-
-def truncate_from_bytes(text: str, max_bytes: int) -> str:
-    """Keep the last max_bytes of text without splitting a character."""
-    if max_bytes <= 0:
-        return ""
-    return text.encode("utf-8")[-max_bytes:].decode("utf-8", errors="ignore")
-
-
 def read_file(
     path: str, start_line: int | None = None, end_line: int | None = None
 ) -> dict[str, Any]:
@@ -81,11 +69,10 @@ def read_file(
     if len(content.encode("utf-8")) > MAX_TOOL_OUTPUT_BYTES:
         # Only a single line longer than the limit gets cut mid-line.
         marker = f"\n[line {first_line} truncated; output limit reached]"
+        limit = MAX_TOOL_OUTPUT_BYTES - len(marker.encode("utf-8"))
+        # errors="ignore" drops a character that the byte limit cut in half.
         content = (
-            truncate_to_bytes(
-                content, MAX_TOOL_OUTPUT_BYTES - len(marker.encode("utf-8"))
-            )
-            + marker
+            content.encode("utf-8")[:limit].decode("utf-8", errors="ignore") + marker
         )
 
     return {
@@ -170,9 +157,10 @@ def render_output(head: bytes, tail: bytes, omitted: int, budget: int) -> str:
         if len(head_text.encode("utf-8")) <= budget:
             return head_text
 
+    # Cut on bytes; errors="ignore" drops a character split at either cut.
     keep = (budget - OMISSION_MARKER_ROOM) // 2
-    kept_head = truncate_to_bytes(head_text, keep)
-    kept_tail = truncate_from_bytes(tail_text, keep)
+    kept_head = head_text.encode("utf-8")[:keep].decode("utf-8", errors="ignore")
+    kept_tail = tail_text.encode("utf-8")[-keep:].decode("utf-8", errors="ignore")
     dropped = (
         omitted
         + len(head)
@@ -406,8 +394,12 @@ def web_fetch(url: str, offset: int | None = None) -> dict[str, Any]:
         fetch_page.cache_clear()
 
     final_url, title, text, truncated = fetch_page(url)
-    content = truncate_to_bytes(
-        text[offset : offset + MAX_TOOL_OUTPUT_BYTES], MAX_TOOL_OUTPUT_BYTES
+    # At most that many characters can fit; multi-byte text is then cut on
+    # bytes, with errors="ignore" dropping a character split at the limit.
+    content = (
+        text[offset : offset + MAX_TOOL_OUTPUT_BYTES]
+        .encode("utf-8")[:MAX_TOOL_OUTPUT_BYTES]
+        .decode("utf-8", errors="ignore")
     )
     end = offset + len(content)
     return {
