@@ -14,8 +14,11 @@ MiniMe is a small interactive coding agent in three flat modules (no package):
 - `uv run pytest` — run the tests in `tests/` (a few seconds; no network access,
   API key or `.env` needed).
 - Requires Python 3.14+; run through `uv` so the pinned interpreter is used.
-- No linter, formatter, type checker or CI is configured. Do not introduce or
-  assume `ruff` / `mypy` commands; ask before adding tooling.
+- `uv run ruff check` and `uv run ruff format` — lint and format; both must be
+  clean. Rules are in `pyproject.toml`; `E501` is ignored, so long strings and
+  docstrings are fine.
+- No type checker or CI is configured. Do not introduce or assume `mypy`
+  commands; ask before adding tooling.
 
 ## Tests
 - `tests/conftest.py` has an autouse `settings` fixture: every test gets its own
@@ -24,9 +27,6 @@ MiniMe is a small interactive coding agent in three flat modules (no package):
 - Shared helpers there: `site` (a local HTTP server with per-test routes),
   `FakeClient` / `response` / `tool_call` (scripted model responses), and
   `kinds` (a one-label-per-item summary of `history`).
-- Do not monkeypatch `tools.MAX_TOOL_OUTPUT_BYTES`: `truncate_to_bytes` binds it
-  as a default argument at import time, so the patch only half applies. Use
-  inputs larger than the real limit instead.
 - `run_command` tests need a POSIX shell and are skipped elsewhere; the timeout
   tests take one second each because the timeout is a whole number of seconds.
 
@@ -46,16 +46,20 @@ MiniMe is a small interactive coding agent in three flat modules (no package):
   `BRAVE_API_KEY`→`brave_api_key`. Unknown env vars are ignored.
 - Config is loaded lazily by the cached `get_config()`; there is no module-level
   config object.
-- `workspace_root` defaults to the current working directory; `.env` is still
-  read from next to `config.py`. `resolve_workspace_path` restricts the file
+- `workspace_root` defaults to the current working directory and must be an
+  existing directory (checked at startup); `.env` is still read from next to
+  `config.py`. `resolve_workspace_path` restricts the file
   tools and `run_command`'s `cwd` to it, but `run_command` itself runs with
   `shell=True` and is not sandboxed.
-- `system_prompt` is a `str.format` template filled in per turn (workspace root,
-  OS, date). Literal braces in it must be doubled.
+- `system_prompt` is plain text; `run_turn` appends an Environment section
+  (workspace root, OS, date) to it on each turn.
 - Tool results are capped at `MAX_TOOL_OUTPUT_BYTES`, each in its own way:
   `read_file` stops at a line boundary and returns `next_start_line`;
-  `web_fetch` returns `next_offset`; `run_command` keeps the first and last
-  half of stdout and of stderr and notes how many bytes were omitted.
+  `web_fetch` returns `next_offset`; `run_command` shares one limit between
+  stdout and stderr (neither gets less than half) and keeps the start and end
+  of a clipped stream with a note of how many bytes were omitted.
+- Tool results go into `history` as plain JSON (`ensure_ascii=False`, no
+  wrapper object), so non-ASCII output is not inflated by escaping.
 - The web tools use `httpx2` (the client `openai` depends on; plain `httpx` is
   not installed). `build_tool_schemas` omits `web_search` when `BRAVE_API_KEY`
   is unset.

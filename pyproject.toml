@@ -14,9 +14,22 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "ruff>=0.17.0",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # The modules are flat files in the project root, not an installed package.
 pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py314"
+
+[tool.ruff.lint]
+# BLE and SIM are the rules the existing `# noqa` comments refer to; RUF100
+# reports a `# noqa` that no longer suppresses anything.
+select = ["E", "F", "I", "B", "UP", "SIM", "BLE", "RUF100"]
+ignore = [
+    "E501",   # line length is the formatter's job; long strings are allowed
+    "SIM105", # try/except/pass reads better here than contextlib.suppress
+]

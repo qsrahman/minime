@@ -7,7 +7,10 @@ import tools
 
 class TestResolveWorkspacePath:
     def test_relative_path(self, workspace: Path) -> None:
-        assert tools.resolve_workspace_path("a/b.txt") == workspace.resolve() / "a" / "b.txt"
+        assert (
+            tools.resolve_workspace_path("a/b.txt")
+            == workspace.resolve() / "a" / "b.txt"
+        )
 
     def test_absolute_path_inside(self, workspace: Path) -> None:
         target = workspace.resolve() / "inside.txt"
@@ -16,7 +19,9 @@ class TestResolveWorkspacePath:
     def test_workspace_root_itself(self, workspace: Path) -> None:
         assert tools.resolve_workspace_path(".") == workspace.resolve()
 
-    @pytest.mark.parametrize("path", ["../outside.txt", "a/../../outside.txt", "/etc/hosts"])
+    @pytest.mark.parametrize(
+        "path", ["../outside.txt", "a/../../outside.txt", "/etc/hosts"]
+    )
     def test_outside_is_rejected(self, path: str) -> None:
         with pytest.raises(ValueError, match="outside the workspace"):
             tools.resolve_workspace_path(path)
@@ -41,11 +46,11 @@ LIMIT = tools.MAX_TOOL_OUTPUT_BYTES
 
 class TestTruncation:
     def test_short_text_is_unchanged(self) -> None:
-        assert tools.truncate_to_bytes("héllo") == "héllo"
+        assert tools.truncate_to_bytes("héllo", 100) == "héllo"
         assert tools.truncate_from_bytes("héllo", 100) == "héllo"
 
-    def test_default_limit(self) -> None:
-        assert tools.truncate_to_bytes("x" * (LIMIT + 10)) == "x" * LIMIT
+    def test_head_keeps_the_start(self) -> None:
+        assert tools.truncate_to_bytes("abcdef", 2) == "ab"
 
     def test_head_never_splits_a_character(self) -> None:
         # "é" is two bytes, so only two whole characters fit in five bytes.
@@ -115,7 +120,9 @@ class TestReadFile:
             (5, 4, "end_line must be greater than or equal to start_line"),
         ],
     )
-    def test_invalid_ranges(self, numbered: Path, start: int | None, end: int | None, message: str) -> None:
+    def test_invalid_ranges(
+        self, numbered: Path, start: int | None, end: int | None, message: str
+    ) -> None:
         with pytest.raises(ValueError, match=message):
             tools.read_file("numbers.txt", start, end)
 
@@ -226,6 +233,12 @@ class TestWriteFile:
 
     def test_message_counts_bytes_not_characters(self) -> None:
         assert tools.write_file("f.txt", "é")["message"].startswith("written 2 bytes")
+
+    def test_message_names_the_path_as_given(self) -> None:
+        assert tools.write_file("a/b.txt", "xyz") == {
+            "ok": True,
+            "message": "written 3 bytes to a/b.txt",
+        }
 
     def test_empty_content(self, workspace: Path) -> None:
         tools.write_file("empty.txt", "")

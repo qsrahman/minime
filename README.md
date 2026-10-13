@@ -48,7 +48,7 @@ Configuration can be provided through environment variables or the `.env` file. 
 | `MAX_HISTORY_TURNS`       | No       | `12`              | Number of recent requests kept in the conversation.   |
 | `MAX_HISTORY_BYTES`       | No       | `262144`          | Size limit for the conversation sent to the model.    |
 | `STREAMING`               | No       | `true`            | Print the response as it is generated.                |
-| `WORKSPACE_ROOT`          | No       | Current directory | File and working-directory paths must stay inside it. |
+| `WORKSPACE_ROOT`          | No       | Current directory | Existing directory that file paths must stay inside.  |
 | `BRAVE_API_KEY`           | No       |                   | Brave Search API key. Enables the `web_search` tool.  |
 
 ## Agent tools
@@ -56,7 +56,7 @@ Configuration can be provided through environment variables or the `.env` file. 
 - `read_file` reads a workspace file, optionally selecting a range of lines. Long files are returned up to 16 KB at a time, in whole lines, with the line number to continue from.
 - `write_file` creates or replaces a workspace file, or appends to it.
 - `edit_file` replaces a text fragment; by default, the fragment must occur exactly once.
-- `run_command` runs a shell command from the workspace, with an optional working directory and timeout. Commands get no standard input. When stdout or stderr exceeds 16 KB, the first and last 8 KB are kept and the middle is omitted.
+- `run_command` runs a shell command from the workspace, with an optional working directory and timeout. Commands get no standard input. stdout and stderr share a 16 KB limit; when a stream is clipped, its start and end are kept and the middle is omitted.
 - `web_fetch` downloads a web page (up to 2 MB, within 20 seconds) and returns its text, 16 KB at a time. If the download exceeds 2 MB, the result sets `truncated` to `true`. HTML is reduced to readable text with links kept; navigation, headers, footers and sidebars are dropped.
 - `web_search` searches the web with the [Brave Search API](https://brave.com/search/api/). It is only offered to the model when `BRAVE_API_KEY` is set.
 
@@ -75,3 +75,10 @@ uv run pytest
 ```
 
 They need no API key or network access: model responses are scripted and web pages are served from a local test server.
+
+Lint and format with [ruff](https://docs.astral.sh/ruff/):
+
+```sh
+uv run ruff check
+uv run ruff format
+```

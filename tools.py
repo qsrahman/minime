@@ -24,6 +24,8 @@ MAX_TOOL_OUTPUT_BYTES = 16 * 1024
 MAX_FETCH_BYTES = 2 * 1024 * 1024
 WEB_TIMEOUT_SECONDS = 20
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
+# Bytes set aside for the "[... N bytes omitted ...]" line in clipped output.
+OMISSION_MARKER_ROOM = 48
 
 
 def resolve_workspace_path(path: str) -> Path:
@@ -38,7 +40,7 @@ def resolve_workspace_path(path: str) -> Path:
     return resolved_path
 
 
-def truncate_to_bytes(text: str, max_bytes: int = MAX_TOOL_OUTPUT_BYTES) -> str:
+def truncate_to_bytes(text: str, max_bytes: int) -> str:
     """Keep the first max_bytes of text without splitting a character."""
     return text.encode("utf-8")[:max_bytes].decode("utf-8", errors="ignore")
 
@@ -76,14 +78,12 @@ def read_file(
             lines.append(line)
 
     content = "".join(lines)
-    truncated_content = truncate_to_bytes(content)
-    if len(truncated_content) < len(content):
+    if len(content.encode("utf-8")) > MAX_TOOL_OUTPUT_BYTES:
         # Only a single line longer than the limit gets cut mid-line.
         marker = f"\n[line {first_line} truncated; output limit reached]"
         content = (
             truncate_to_bytes(
-                truncated_content,
-                MAX_TOOL_OUTPUT_BYTES - len(marker.encode("utf-8")),
+                content, MAX_TOOL_OUTPUT_BYTES - len(marker.encode("utf-8"))
             )
             + marker
         )
@@ -107,7 +107,7 @@ def write_file(path: str, content: str, append: bool = False) -> dict[str, Any]:
     operation = "appended" if append else "written"
     return {
         "ok": True,
-        "message": f"{operation} {len(content.encode('utf-8'))} bytes to {file_path}",
+        "message": f"{operation} {len(content.encode('utf-8'))} bytes to {path}",
     }
 
 
@@ -141,8 +141,11 @@ def edit_file(
     }
 
 
-def read_bounded_output(stream: IO[Any]) -> str:
-    """Read a stream to its end, keeping only the first and last halves of the limit."""
+def read_bounded_output(stream: IO[Any]) -> tuple[bytes, bytes, int]:
+    """Read a stream to its end, keeping its first and last halves of the limit.
+
+    Returns the head, the tail, and how many bytes between them were dropped.
+    """
     half = MAX_TOOL_OUTPUT_BYTES // 2
     head = bytearray()
     tail = bytearray()
@@ -154,20 +157,30 @@ def read_bounded_output(stream: IO[Any]) -> str:
         if len(tail) > half:
             omitted += len(tail) - half
             del tail[:-half]
+    return bytes(head), bytes(tail), omitted
 
-    if not omitted:
-        return truncate_to_bytes((head + tail).decode("utf-8", errors="replace"))
 
-    marker = truncate_to_bytes(f"\n[... {omitted} bytes omitted ...]\n")
-    remaining = MAX_TOOL_OUTPUT_BYTES - len(marker.encode("utf-8"))
-    head_text = head.decode("utf-8", errors="replace")
-    tail_text = tail.decode("utf-8", errors="replace")
-    head_budget = remaining // 2
-    return (
-        truncate_to_bytes(head_text, head_budget)
-        + marker
-        + truncate_from_bytes(tail_text, remaining - head_budget)
+def render_output(head: bytes, tail: bytes, omitted: int, budget: int) -> str:
+    """Decode captured output, keeping its start and end if it exceeds budget bytes."""
+    if omitted:
+        head_text = head.decode("utf-8", errors="replace")
+        tail_text = tail.decode("utf-8", errors="replace")
+    else:
+        head_text = tail_text = (head + tail).decode("utf-8", errors="replace")
+        if len(head_text.encode("utf-8")) <= budget:
+            return head_text
+
+    keep = (budget - OMISSION_MARKER_ROOM) // 2
+    kept_head = truncate_to_bytes(head_text, keep)
+    kept_tail = truncate_from_bytes(tail_text, keep)
+    dropped = (
+        omitted
+        + len(head)
+        + len(tail)
+        - len(kept_head.encode("utf-8"))
+        - len(kept_tail.encode("utf-8"))
     )
+    return f"{kept_head}\n[... {dropped} bytes omitted ...]\n{kept_tail}"
 
 
 def kill_process_tree(process: subprocess.Popen[bytes]) -> None:
@@ -224,14 +237,25 @@ def run_command(
         except KeyboardInterrupt:
             kill_process_tree(process)
             raise
-        stdout = stdout_future.result()
-        stderr = stderr_future.result()
+        stdout_capture = stdout_future.result()
+        stderr_capture = stderr_future.result()
 
+    # One limit covers both streams: each may use what the other leaves, and
+    # neither gets less than half.
+    half = MAX_TOOL_OUTPUT_BYTES // 2
+    stdout_size, stderr_size = (
+        MAX_TOOL_OUTPUT_BYTES if omitted else len(head) + len(tail)
+        for head, tail, omitted in (stdout_capture, stderr_capture)
+    )
     return {
         "ok": returncode == 0,
         "timed_out": returncode is None,
-        "stdout": stdout,
-        "stderr": stderr,
+        "stdout": render_output(
+            *stdout_capture, max(half, MAX_TOOL_OUTPUT_BYTES - stderr_size)
+        ),
+        "stderr": render_output(
+            *stderr_capture, max(half, MAX_TOOL_OUTPUT_BYTES - stdout_size)
+        ),
         "returncode": returncode,
     }
 
@@ -382,7 +406,9 @@ def web_fetch(url: str, offset: int | None = None) -> dict[str, Any]:
         fetch_page.cache_clear()
 
     final_url, title, text, truncated = fetch_page(url)
-    content = truncate_to_bytes(text[offset : offset + MAX_TOOL_OUTPUT_BYTES])
+    content = truncate_to_bytes(
+        text[offset : offset + MAX_TOOL_OUTPUT_BYTES], MAX_TOOL_OUTPUT_BYTES
+    )
     end = offset + len(content)
     return {
         "ok": True,

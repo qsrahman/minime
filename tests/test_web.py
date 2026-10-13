@@ -3,10 +3,10 @@ from typing import Any
 
 import httpx2
 import pytest
+from conftest import Site
 
 import config
 import tools
-from conftest import Site
 
 LIMIT = tools.MAX_TOOL_OUTPUT_BYTES
 
@@ -17,19 +17,39 @@ def text_of(markup: str, base_url: str = "") -> str:
 
 class TestHtmlToText:
     def test_title_is_returned_separately(self) -> None:
-        title, text = tools.html_to_text("<html><head><title> My &amp; Page </title></head><body><p>Body</p></body>")
+        title, text = tools.html_to_text(
+            "<html><head><title> My &amp; Page </title></head><body><p>Body</p></body>"
+        )
         assert (title, text) == ("My & Page", "Body")
 
     def test_no_title(self) -> None:
         assert tools.html_to_text("<p>Body</p>") == ("", "Body")
 
     def test_only_the_first_title_counts(self) -> None:
-        title, text = tools.html_to_text("<title>First</title><body><title>Second</title><p>Body</p>")
+        title, text = tools.html_to_text(
+            "<title>First</title><body><title>Second</title><p>Body</p>"
+        )
         assert title == "First"
 
-    @pytest.mark.parametrize("tag", ["script", "style", "noscript", "template", "svg", "nav", "header", "footer", "aside"])
+    @pytest.mark.parametrize(
+        "tag",
+        [
+            "script",
+            "style",
+            "noscript",
+            "template",
+            "svg",
+            "nav",
+            "header",
+            "footer",
+            "aside",
+        ],
+    )
     def test_skipped_elements(self, tag: str) -> None:
-        assert text_of(f"<p>before</p><{tag}>HIDDEN <b>nested</b></{tag}><p>after</p>") == "before\n\nafter"
+        assert (
+            text_of(f"<p>before</p><{tag}>HIDDEN <b>nested</b></{tag}><p>after</p>")
+            == "before\n\nafter"
+        )
 
     def test_nested_skipped_elements_of_the_same_tag(self) -> None:
         assert text_of("<nav>a<nav>b</nav>still hidden</nav><p>shown</p>") == "shown"
@@ -38,7 +58,9 @@ class TestHtmlToText:
         title, text = tools.html_to_text("<svg><title>Icon</title></svg><p>Body</p>")
         assert (title, text) == ("", "Body")
 
-    @pytest.mark.parametrize("role", ["navigation", "search", "banner", "contentinfo", "complementary"])
+    @pytest.mark.parametrize(
+        "role", ["navigation", "search", "banner", "contentinfo", "complementary"]
+    )
     def test_containers_with_chrome_roles_are_skipped(self, role: str) -> None:
         markup = f'<div role="{role}"><div>inner</div>HIDDEN</div><p>shown</p>'
         assert text_of(markup) == "shown"
@@ -47,16 +69,25 @@ class TestHtmlToText:
         assert text_of('<div role="main"><p>shown</p></div>') == "shown"
 
     def test_roles_on_void_elements_do_not_hide_the_rest(self) -> None:
-        assert text_of('<input role="search"><hr role="navigation"><p>shown</p>') == "shown"
+        assert (
+            text_of('<input role="search"><hr role="navigation"><p>shown</p>')
+            == "shown"
+        )
 
     def test_whitespace_is_collapsed(self) -> None:
         assert text_of("<p>one\n   two\t\tthree</p>") == "one two three"
 
     def test_inline_elements_keep_word_spacing(self) -> None:
-        assert text_of("<p>plain <b>bold</b> and <i>italic</i>.</p>") == "plain bold and italic."
+        assert (
+            text_of("<p>plain <b>bold</b> and <i>italic</i>.</p>")
+            == "plain bold and italic."
+        )
 
     def test_block_elements_start_new_lines(self) -> None:
-        assert text_of("<h1>Title</h1><p>One</p><ul><li>a</li><li>b</li></ul>") == "Title\n\nOne\n\na\n\nb"
+        assert (
+            text_of("<h1>Title</h1><p>One</p><ul><li>a</li><li>b</li></ul>")
+            == "Title\n\nOne\n\na\n\nb"
+        )
 
     def test_line_breaks(self) -> None:
         assert text_of("<p>one<br>two<br>three</p>") == "one\ntwo\nthree"
@@ -69,22 +100,33 @@ class TestHtmlToText:
         assert text_of("<p>one</p><hr/><p>two</p>") == "one\n\ntwo"
 
     def test_blank_lines_are_squeezed(self) -> None:
-        assert text_of("<div><div><div><p>a</p></div></div></div><div><p>b</p></div>") == "a\n\nb"
+        assert (
+            text_of("<div><div><div><p>a</p></div></div></div><div><p>b</p></div>")
+            == "a\n\nb"
+        )
 
     def test_entities_are_decoded(self) -> None:
-        assert text_of("<p>a &lt; b &amp;&amp; c &gt; d &copy; &#233;</p>") == "a < b && c > d © é"
+        assert (
+            text_of("<p>a &lt; b &amp;&amp; c &gt; d &copy; &#233;</p>")
+            == "a < b && c > d © é"
+        )
 
     def test_pre_is_kept_verbatim(self) -> None:
-        assert text_of("<pre>def f():\n    return  1\n</pre>") == "def f():\n    return  1"
+        assert (
+            text_of("<pre>def f():\n    return  1\n</pre>") == "def f():\n    return  1"
+        )
 
     def test_links_become_markdown(self) -> None:
-        assert text_of('<p>See <a href="https://example.com/a?b=1">the <b>docs</b></a>.</p>') == (
-            "See [the docs](https://example.com/a?b=1)."
-        )
+        assert text_of(
+            '<p>See <a href="https://example.com/a?b=1">the <b>docs</b></a>.</p>'
+        ) == ("See [the docs](https://example.com/a?b=1).")
 
     def test_relative_links_are_resolved(self) -> None:
         base = "https://example.com/guide/page.html"
-        assert text_of('<a href="intro.html">x</a> <a href="/root">y</a> <a href="../up">z</a>', base) == (
+        assert text_of(
+            '<a href="intro.html">x</a> <a href="/root">y</a> <a href="../up">z</a>',
+            base,
+        ) == (
             "[x](https://example.com/guide/intro.html) [y](https://example.com/root) [z](https://example.com/up)"
         )
 
@@ -105,7 +147,10 @@ class TestHtmlToText:
         assert text_of('<nav><a href="/x">Home</a></nav><p>Body</p>') == "Body"
 
     def test_plain_text_fragment(self) -> None:
-        assert tools.html_to_text("just <strong>text</strong> &amp; more") == ("", "just text & more")
+        assert tools.html_to_text("just <strong>text</strong> &amp; more") == (
+            "",
+            "just text & more",
+        )
 
     def test_empty_document(self) -> None:
         assert tools.html_to_text("") == ("", "")
@@ -128,12 +173,16 @@ class TestWebFetch:
             "url": url,
             "title": "Fixture",
             "content": f"Heading\n\nSee [the intro]({site.url('/guide/intro.html')}).",
-            "total_chars": len(f"Heading\n\nSee [the intro]({site.url('/guide/intro.html')})."),
+            "total_chars": len(
+                f"Heading\n\nSee [the intro]({site.url('/guide/intro.html')})."
+            ),
             "next_offset": None,
             "truncated": False,
         }
 
-    def test_sends_a_user_agent(self, site: Site, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_sends_a_user_agent(
+        self, site: Site, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         seen: dict[str, Any] = {}
         real_stream = httpx2.stream
 
@@ -158,18 +207,28 @@ class TestWebFetch:
             ("text/markdown; charset=utf-8", "# Title\n"),
         ],
     )
-    def test_non_html_text_is_returned_as_is(self, site: Site, content_type: str, body: str) -> None:
+    def test_non_html_text_is_returned_as_is(
+        self, site: Site, content_type: str, body: str
+    ) -> None:
         result = tools.web_fetch(site.add("/data", body, content_type))
         assert result["content"] == body
         assert result["title"] == ""
 
     def test_xhtml_is_treated_as_html(self, site: Site) -> None:
-        result = tools.web_fetch(site.add("/x", "<html><body><p>Body</p></body></html>", "application/xhtml+xml"))
+        result = tools.web_fetch(
+            site.add(
+                "/x", "<html><body><p>Body</p></body></html>", "application/xhtml+xml"
+            )
+        )
         assert result["content"] == "Body"
 
-    @pytest.mark.parametrize("content_type", ["image/png", "application/pdf", "application/octet-stream"])
+    @pytest.mark.parametrize(
+        "content_type", ["image/png", "application/pdf", "application/octet-stream"]
+    )
     def test_binary_content_is_rejected(self, site: Site, content_type: str) -> None:
-        with pytest.raises(ValueError, match=f"unsupported content type: {content_type}"):
+        with pytest.raises(
+            ValueError, match=f"unsupported content type: {content_type}"
+        ):
             tools.web_fetch(site.add("/file", b"\x89PNG\r\n", content_type))
 
     def test_missing_content_type_is_rejected(self, site: Site) -> None:
@@ -192,7 +251,9 @@ class TestWebFetch:
         with pytest.raises(httpx2.UnsupportedProtocol):
             tools.web_fetch("ftp://example.com/file")
 
-    def test_redirects_are_followed_and_links_use_the_final_url(self, site: Site) -> None:
+    def test_redirects_are_followed_and_links_use_the_final_url(
+        self, site: Site
+    ) -> None:
         final = site.add("/new/page.html", '<p><a href="other.html">other</a></p>')
         start = site.add("/old", status=302, headers={"Location": "/new/page.html"})
         result = tools.web_fetch(start)
@@ -200,7 +261,9 @@ class TestWebFetch:
         assert result["content"] == f"[other]({site.url('/new/other.html')})"
 
     def test_declared_charset_is_used(self, site: Site) -> None:
-        url = site.add("/latin", "café".encode("latin-1"), "text/plain; charset=iso-8859-1")
+        url = site.add(
+            "/latin", "café".encode("latin-1"), "text/plain; charset=iso-8859-1"
+        )
         assert tools.web_fetch(url)["content"] == "café"
 
     def test_undecodable_bytes_are_replaced(self, site: Site) -> None:
@@ -259,7 +322,9 @@ class TestWebFetch:
         assert tools.web_fetch(first, 50)["content"] == "a" * 50
         assert site.hits == ["/a", "/b", "/a"]
 
-    def test_download_is_capped_and_reported(self, site: Site, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_download_is_capped_and_reported(
+        self, site: Site, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr(tools, "MAX_FETCH_BYTES", 1000)
         result = tools.web_fetch(site.add("/big", "x" * 5000, "text/plain"))
         assert result["total_chars"] == 1000
@@ -272,7 +337,9 @@ class TestWebFetch:
         result = tools.web_fetch(site.add("/exact", "x" * 1000, "text/plain"))
         assert (result["total_chars"], result["truncated"]) == (1000, False)
 
-    def test_slow_download_hits_the_deadline(self, site: Site, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_slow_download_hits_the_deadline(
+        self, site: Site, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         def drip(wfile: Any) -> None:
             for _ in range(100):
                 wfile.write(b"drip\n")
@@ -310,7 +377,10 @@ class FakeSearchResponse:
 def brave(settings: config.Config, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """Enable web_search and replace the Brave request with a recorder."""
     settings.brave_api_key = "brave-key"
-    state: dict[str, Any] = {"response": FakeSearchResponse({"web": {"results": []}}), "calls": []}
+    state: dict[str, Any] = {
+        "response": FakeSearchResponse({"web": {"results": []}}),
+        "calls": [],
+    }
 
     def fake_get(url: str, **kwargs: Any) -> FakeSearchResponse:
         state["calls"].append({"url": url, **kwargs})
@@ -322,7 +392,9 @@ def brave(settings: config.Config, monkeypatch: pytest.MonkeyPatch) -> dict[str,
 
 class TestWebSearch:
     def test_requires_an_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(httpx2, "get", lambda *a, **k: pytest.fail("no request expected"))
+        monkeypatch.setattr(
+            httpx2, "get", lambda *a, **k: pytest.fail("no request expected")
+        )
         with pytest.raises(ValueError, match="BRAVE_API_KEY is not set"):
             tools.web_search("query")
 
@@ -332,7 +404,10 @@ class TestWebSearch:
             {
                 "url": "https://api.search.brave.com/res/v1/web/search",
                 "params": {"q": "uv sync site:astral.sh", "count": 5},
-                "headers": {"X-Subscription-Token": "brave-key", "Accept": "application/json"},
+                "headers": {
+                    "X-Subscription-Token": "brave-key",
+                    "Accept": "application/json",
+                },
                 "timeout": tools.WEB_TIMEOUT_SECONDS,
             }
         ]
@@ -367,17 +442,26 @@ class TestWebSearch:
         assert tools.web_search("q") == {
             "ok": True,
             "results": [
-                {"title": "A & B", "url": "https://example.com/1", "description": "Use uv to sync <deps>."},
+                {
+                    "title": "A & B",
+                    "url": "https://example.com/1",
+                    "description": "Use uv to sync <deps>.",
+                },
                 {"title": "", "url": "https://example.com/2", "description": ""},
             ],
         }
 
-    @pytest.mark.parametrize("payload", [{}, {"web": {}}, {"web": {"results": []}}, {"query": {"original": "q"}}])
+    @pytest.mark.parametrize(
+        "payload",
+        [{}, {"web": {}}, {"web": {"results": []}}, {"query": {"original": "q"}}],
+    )
     def test_no_results(self, brave: dict[str, Any], payload: dict[str, Any]) -> None:
         brave["response"] = FakeSearchResponse(payload)
         assert tools.web_search("q") == {"ok": True, "results": []}
 
     def test_http_errors_propagate(self, brave: dict[str, Any]) -> None:
-        brave["response"] = FakeSearchResponse(None, error=RuntimeError("429 Too Many Requests"))
+        brave["response"] = FakeSearchResponse(
+            None, error=RuntimeError("429 Too Many Requests")
+        )
         with pytest.raises(RuntimeError, match="429"):
             tools.web_search("q")

@@ -2,7 +2,7 @@ import sys
 from functools import cache
 from pathlib import Path
 
-from pydantic import Field, ValidationError
+from pydantic import DirectoryPath, Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -54,7 +54,7 @@ class Config(BaseSettings):
         default=None,
         validation_alias="BRAVE_API_KEY",
     )
-    workspace_root: Path = Field(
+    workspace_root: DirectoryPath = Field(
         default_factory=Path.cwd,
         validation_alias="WORKSPACE_ROOT",
     )

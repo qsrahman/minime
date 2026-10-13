@@ -51,7 +51,9 @@ def workspace(settings: config.Config) -> Path:
     return settings.workspace_root
 
 
-def tool_call(name: str, call_id: str = "call_1", **arguments: Any) -> ResponseFunctionToolCall:
+def tool_call(
+    name: str, call_id: str = "call_1", **arguments: Any
+) -> ResponseFunctionToolCall:
     return ResponseFunctionToolCall(
         type="function_call",
         call_id=call_id,
@@ -71,7 +73,9 @@ class Site:
 
     def __init__(self, server: ThreadingHTTPServer) -> None:
         self.base = f"http://127.0.0.1:{server.server_address[1]}"
-        self.routes: dict[str, tuple[int, dict[str, str], bytes | Callable[[Any], None]]] = {}
+        self.routes: dict[
+            str, tuple[int, dict[str, str], bytes | Callable[[Any], None]]
+        ] = {}
         self.hits: list[str] = []
 
     def add(
@@ -156,7 +160,7 @@ class FakeStream:
     def __init__(self, final: SimpleNamespace) -> None:
         self.final = final
 
-    def __enter__(self) -> "FakeStream":
+    def __enter__(self) -> FakeStream:
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -202,8 +206,10 @@ def kinds(history: list[Any]) -> list[str]:
         if isinstance(item, dict) and "role" in item:
             labels.append(f"user:{item['content']}")
         elif isinstance(item, dict):
-            result = json.loads(item["output"])["tool_result"]
-            labels.append(f"output:{item['call_id']}:{'ok' if result['ok'] else result.get('message', 'failed')}")
+            result = json.loads(item["output"])
+            labels.append(
+                f"output:{item['call_id']}:{'ok' if result['ok'] else result.get('message', 'failed')}"
+            )
         elif isinstance(item, ResponseFunctionToolCall):
             labels.append(f"call:{item.call_id}")
         else:

@@ -6,7 +6,9 @@ import pytest
 import config
 import main
 
-PLACEHOLDER = "[Previous request omitted because its history exceeded the context budget.]"
+PLACEHOLDER = (
+    "[Previous request omitted because its history exceeded the context budget.]"
+)
 
 
 def user(content: str) -> dict[str, Any]:
@@ -45,7 +47,13 @@ def test_empty_history() -> None:
 
 def test_oldest_turns_are_dropped_by_count(settings: config.Config) -> None:
     settings.max_history_turns = 2
-    history = [user("one"), output("a", 10), user("two"), output("b", 10), user("three")]
+    history = [
+        user("one"),
+        output("a", 10),
+        user("two"),
+        output("b", 10),
+        user("three"),
+    ]
     assert main.trim_history(history) == (True, False)
     assert sizes(history) == ["two", 10, "three"]
 
@@ -92,14 +100,18 @@ def test_all_tool_outputs_can_be_omitted(settings: config.Config) -> None:
     assert sizes(history) == ["go", "OMITTED", "OMITTED"]
 
 
-def test_oversized_request_is_replaced_by_a_placeholder(settings: config.Config) -> None:
+def test_oversized_request_is_replaced_by_a_placeholder(
+    settings: config.Config,
+) -> None:
     settings.max_history_bytes = 1000
     history = [user("y" * 5000), output("a", 10)]
     assert main.trim_history(history) == (True, True)
     assert history == [user(PLACEHOLDER)]
 
 
-def test_history_is_emptied_when_even_the_placeholder_does_not_fit(settings: config.Config) -> None:
+def test_history_is_emptied_when_even_the_placeholder_does_not_fit(
+    settings: config.Config,
+) -> None:
     settings.max_history_bytes = 10
     history = [user("y" * 5000)]
     assert main.trim_history(history) == (True, True)

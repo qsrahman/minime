@@ -26,36 +26,80 @@ def process_is_gone(pid: int, wait_seconds: float = 3.0) -> bool:
     return False
 
 
+def capture(data: bytes) -> tuple[bytes, bytes, int]:
+    return tools.read_bounded_output(io.BytesIO(data))
+
+
+def render(data: bytes, budget: int = LIMIT) -> str:
+    return tools.render_output(*capture(data), budget)
+
+
+def omitted_count(output: str) -> int:
+    match = OMITTED.search(output)
+    assert match, "no omission marker"
+    return int(match.group(1))
+
+
 class TestReadBoundedOutput:
-    def test_short_output_is_unchanged(self) -> None:
-        assert tools.read_bounded_output(io.BytesIO(b"hello\n")) == "hello\n"
+    def test_short_output_is_kept_whole(self) -> None:
+        assert capture(b"hello\n") == (b"hello\n", b"", 0)
 
     def test_empty_output(self) -> None:
-        assert tools.read_bounded_output(io.BytesIO(b"")) == ""
+        assert capture(b"") == (b"", b"", 0)
 
-    def test_output_at_the_limit_is_unchanged(self) -> None:
-        assert tools.read_bounded_output(io.BytesIO(b"a" * LIMIT)) == "a" * LIMIT
+    def test_output_at_the_limit_is_kept_whole(self) -> None:
+        head, tail, omitted = capture(b"a" * LIMIT)
+        assert (head + tail, omitted) == (b"a" * LIMIT, 0)
+
+    def test_long_output_keeps_half_the_limit_from_each_end(self) -> None:
+        data = b"H" * (LIMIT // 2) + b"m" * 100_000 + b"T" * (LIMIT // 2)
+        assert capture(data) == (b"H" * (LIMIT // 2), b"T" * (LIMIT // 2), 100_000)
+
+    def test_memory_is_bounded_for_endless_streams(self) -> None:
+        head, tail, omitted = capture(b"x" * 5_000_000)
+        assert len(head) + len(tail) == LIMIT
+        assert omitted == 5_000_000 - LIMIT
+
+
+class TestRenderOutput:
+    def test_short_output_is_unchanged(self) -> None:
+        assert render(b"hello\n") == "hello\n"
+
+    def test_empty_output(self) -> None:
+        assert render(b"") == ""
+
+    def test_output_at_the_budget_is_unchanged(self) -> None:
+        assert render(b"a" * LIMIT) == "a" * LIMIT
 
     def test_long_output_keeps_both_ends(self) -> None:
-        data = b"H" * 5000 + b"m" * (LIMIT * 3) + b"T" * 5000
-        output = tools.read_bounded_output(io.BytesIO(data))
+        output = render(b"H" * 5000 + b"m" * (LIMIT * 3) + b"T" * 5000)
         assert len(output.encode()) <= LIMIT
         assert output.startswith("H" * 5000)
         assert output.endswith("T" * 5000)
-        assert OMITTED.search(output)
 
-    def test_one_byte_over_the_limit_is_marked(self) -> None:
-        output = tools.read_bounded_output(io.BytesIO(b"a" * (LIMIT + 1)))
+    @pytest.mark.parametrize("extra", [1, 1000, 100_000])
+    def test_omitted_count_is_exact(self, extra: int) -> None:
+        data = b"a" * (LIMIT + extra)
+        output = render(data)
         assert len(output.encode()) <= LIMIT
-        assert OMITTED.search(output)
+        assert omitted_count(output) == len(data) - output.count("a")
+
+    def test_smaller_budget_clips_output_that_was_captured_whole(self) -> None:
+        data = b"H" * 1000 + b"X" * 8000 + b"T" * 1000
+        output = render(data, budget=4096)
+        assert len(output.encode()) <= 4096
+        assert output.startswith("H" * 1000)
+        assert output.endswith("T" * 1000)
+        assert omitted_count(output) == len(data) - sum(output.count(c) for c in "HXT")
 
     def test_invalid_bytes_are_replaced(self) -> None:
-        assert tools.read_bounded_output(io.BytesIO(b"ok \xff\xfe end")) == "ok �� end"
+        assert render(b"ok \xff\xfe end") == "ok \ufffd\ufffd end"
 
-    def test_multibyte_output_stays_within_the_limit(self) -> None:
-        output = tools.read_bounded_output(io.BytesIO("é".encode() * LIMIT))
+    def test_multibyte_output_is_cut_between_characters(self) -> None:
+        output = render("é".encode() * LIMIT)
         assert len(output.encode()) <= LIMIT
-        assert "�" not in output
+        assert "\ufffd" not in output
+
 
 class TestRunCommand:
     def test_success(self) -> None:
@@ -69,14 +113,20 @@ class TestRunCommand:
 
     def test_nonzero_exit(self) -> None:
         result = tools.run_command("exit 3")
-        assert (result["ok"], result["returncode"], result["timed_out"]) == (False, 3, False)
+        assert (result["ok"], result["returncode"], result["timed_out"]) == (
+            False,
+            3,
+            False,
+        )
 
     def test_stdout_and_stderr_are_separate(self) -> None:
         result = tools.run_command("echo out; echo err >&2")
         assert (result["stdout"], result["stderr"]) == ("out\n", "err\n")
 
     def test_pipes_and_redirects(self, workspace: Path) -> None:
-        result = tools.run_command("printf 'b\\na\\n' | sort > sorted.txt && cat sorted.txt")
+        result = tools.run_command(
+            "printf 'b\\na\\n' | sort > sorted.txt && cat sorted.txt"
+        )
         assert result["stdout"] == "a\nb\n"
         assert (workspace / "sorted.txt").read_text() == "a\nb\n"
 
@@ -91,7 +141,9 @@ class TestRunCommand:
 
     def test_relative_cwd(self, workspace: Path) -> None:
         (workspace / "sub").mkdir()
-        assert tools.run_command("pwd", cwd="sub")["stdout"].strip() == str(workspace.resolve() / "sub")
+        assert tools.run_command("pwd", cwd="sub")["stdout"].strip() == str(
+            workspace.resolve() / "sub"
+        )
 
     def test_cwd_outside_the_workspace(self) -> None:
         with pytest.raises(ValueError, match="outside the workspace"):
@@ -132,6 +184,30 @@ class TestRunCommand:
         assert stdout.startswith("1\n2\n3\n")
         assert stdout.endswith("20000\nFINAL_ERROR_LINE\n")
         assert OMITTED.search(stdout)
+
+    def test_streams_share_one_limit(self) -> None:
+        result = tools.run_command("seq 1 20000; seq 1 20000 >&2")
+        stdout, stderr = result["stdout"], result["stderr"]
+        assert len(stdout.encode()) + len(stderr.encode()) <= LIMIT
+        for stream in (stdout, stderr):
+            assert stream.startswith("1\n2\n")
+            assert stream.endswith("19999\n20000\n")
+            assert OMITTED.search(stream)
+
+    def test_quiet_stream_leaves_its_share_to_the_other(self) -> None:
+        result = tools.run_command("seq 1 20000; echo warning >&2")
+        assert result["stderr"] == "warning\n"
+        assert len(result["stdout"].encode()) > LIMIT * 0.9
+        assert len(result["stdout"].encode()) + len(result["stderr"].encode()) <= LIMIT
+
+    def test_neither_stream_is_squeezed_below_half(self) -> None:
+        # 10 KB on each stream: both must be clipped, to half the limit each.
+        result = tools.run_command(
+            "head -c 10000 /dev/zero | tr '\\0' a; head -c 10000 /dev/zero | tr '\\0' b >&2"
+        )
+        for stream, letter in ((result["stdout"], "a"), (result["stderr"], "b")):
+            assert LIMIT // 2 - 100 < len(stream.encode()) <= LIMIT // 2
+            assert stream.startswith(letter) and stream.endswith(letter)
 
     def test_timeout_kills_the_command(self) -> None:
         started = time.monotonic()
