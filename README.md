@@ -22,9 +22,9 @@ export OPENAI_API_KEY="your-api-key"
 uv run main.py
 ```
 
-Alternatively, put `OPENAI_API_KEY=your-api-key` in a `.env` file next to `main.py`. MiniMe loads that file automatically, wherever it is started from. Do not commit your API key.
+Alternatively, put `OPENAI_API_KEY=your-api-key` in a `.env` file in the MiniMe directory. MiniMe loads that file automatically, wherever it is started from. Do not commit your API key.
 
-At the `>` prompt, describe a coding task. Enter `exit` or `quit` to end the session. Press Ctrl-C while the agent is working to cancel the current request and return to the prompt; press it at the prompt to quit.
+At the `>` prompt, describe a coding task. Enter `exit` or `quit` to end the session. Press Ctrl-C while the agent is working to stop the current request and return to the prompt; press it at the prompt to quit. Steps the agent had already completed stay in the conversation, so you can ask it to continue.
 
 Conversation history is kept in memory for the duration of the process, limited to the 12 most recent requests and 256 KB. Older requests are dropped first; if a single request is still too large, its oldest tool outputs are omitted.
 
@@ -55,7 +55,7 @@ Configuration can be provided through environment variables or the `.env` file. 
 - `write_file` creates or replaces a workspace file, or appends to it.
 - `edit_file` replaces a text fragment; by default, the fragment must occur exactly once.
 - `run_command` runs a shell command from the workspace, with an optional working directory and timeout. Commands get no standard input, and stdout and stderr are each truncated at 16 KB.
-- `web_fetch` downloads a web page (up to 2 MB) and returns its text, 16 KB at a time. HTML is reduced to visible text; links are not kept.
+- `web_fetch` downloads a web page (up to 2 MB) and returns its text, 16 KB at a time. HTML is reduced to readable text with links kept; navigation, headers, footers and sidebars are dropped.
 - `web_search` searches the web with the [Brave Search API](https://brave.com/search/api/). It is only offered to the model when `BRAVE_API_KEY` is set.
 
 File and working-directory paths are restricted to the workspace root. This is a path check, **not a security sandbox**: shell commands run with the same permissions as the current user and may access or modify other files or resources. Only use MiniMe with prompts and model providers you trust, and review commands and file changes carefully.
@@ -64,4 +64,4 @@ Web pages and search results are passed to the model as they are. A page can con
 
 ## Development
 
-The project declares its runtime dependencies in `pyproject.toml`. Use `uv sync` to install them and `uv run main.py` to start the agent from the project directory. There is no test suite.
+The project declares its runtime dependencies in `pyproject.toml`. Use `uv sync` to install them and `uv run main.py` to start the agent from the project directory. The code is three modules: `config.py` (settings), `tools.py` (the agent's tools) and `main.py` (the conversation loop). There is no test suite.
