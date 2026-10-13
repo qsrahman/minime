@@ -176,21 +176,23 @@ def response_body(
     reason: str | None = None,
     input_tokens: int | None = None,
     cached_tokens: int = 0,
+    output_tokens: int = 7,
+    error: str | None = None,
 ) -> dict[str, Any]:
     """A Responses API reply. Usage is left out unless input_tokens is given."""
     usage = input_tokens and {
         "input_tokens": input_tokens,
         "input_tokens_details": {"cached_tokens": cached_tokens},
-        "output_tokens": 7,
+        "output_tokens": output_tokens,
         "output_tokens_details": {"reasoning_tokens": 0},
-        "total_tokens": input_tokens + 7,
+        "total_tokens": input_tokens + output_tokens,
     }
     return {
         "id": "resp_1",
         "object": "response",
         "created_at": 0,
         "status": status,
-        "error": None,
+        "error": {"code": "server_error", "message": error} if error else None,
         "incomplete_details": {"reason": reason} if reason else None,
         "instructions": None,
         "model": "test-model",

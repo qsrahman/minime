@@ -4,9 +4,10 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, cast
 
-from openai import Omit, OpenAI, omit
+from openai import Omit, OpenAI, OpenAIError, omit
 from openai.types.responses import (
     EasyInputMessageParam,
+    Response,
     ResponseFunctionToolCall,
     ResponseInputParam,
 )
@@ -31,6 +32,15 @@ INTERRUPTED_TOOL_RESULT = {
     "ok": False,
     "message": "Interrupted by the user.",
 }
+SUMMARY_MARKER = (
+    "[Summary of the earlier conversation, which was removed to save space]"
+)
+SUMMARY_REQUEST = (
+    "The conversation above is about to be removed to save space. Write a summary "
+    "of it for your own later use: what the user asked for, what was done and "
+    "found, the files and commands involved, decisions made, and anything still "
+    "unfinished. Be specific, use at most 300 words, and do not call tools."
+)
 OMITTED_TOOL_OUTPUT = (
     "[Tool output omitted to fit the context budget; "
     "call the tool again if it is still needed.]"
@@ -114,6 +124,28 @@ def trim_history(history: ResponseInputParam, max_bytes: int) -> tuple[bool, boo
     return trimmed, False
 
 
+def summarize(
+    client: OpenAI,
+    dropped: ResponseInputParam,
+    tool_schemas: list[ToolParam],
+    instructions: str,
+    reasoning: Reasoning | Omit,
+) -> Response:
+    """Ask the model to summarise history items that are being dropped."""
+    # The same instructions, tools and reasoning setting as every other request:
+    # the dropped items were the start of the previous prompt, so the provider
+    # has nearly all of this one cached.
+    return client.responses.create(
+        model=get_config().model,
+        instructions=instructions,
+        input=[*dropped, {"role": "user", "content": SUMMARY_REQUEST}],
+        tools=tool_schemas,
+        tool_choice="none",
+        reasoning=reasoning,
+        store=False,
+    )
+
+
 def run_turn(
     client: OpenAI,
     conversation: Conversation,
@@ -133,6 +165,7 @@ def run_turn(
     )
     context_tokens = 0
     cached_tokens = 0
+    output_tokens = 0
     user_message: EasyInputMessageParam = {"role": "user", "content": prompt}
     history.append(user_message)
 
@@ -142,8 +175,36 @@ def run_turn(
                 int(settings.max_history_tokens / conversation.tokens_per_byte)
                 - overhead_bytes
             )
+            before = list(history)
             trimmed, current_turn_dropped = trim_history(history, max_bytes)
-            if trimmed:
+            # Whole turns are only ever removed from the front.
+            dropped = (
+                [] if current_turn_dropped else before[: len(before) - len(history)]
+            )
+            if dropped:
+                print("[Summarising earlier conversation to save space…]")
+                try:
+                    reply = summarize(
+                        client, dropped, tool_schemas, instructions, reasoning
+                    )
+                    summary = reply.output_text.strip()
+                    if reply.usage:
+                        output_tokens += reply.usage.output_tokens
+                except KeyboardInterrupt:
+                    history[:0] = dropped
+                    raise
+                except OpenAIError as exc:
+                    summary = ""
+                    print(
+                        f"[No summary ({type(exc).__name__}); it was dropped instead]"
+                    )
+                summary_message: EasyInputMessageParam = {
+                    "role": "user",
+                    "content": f"{SUMMARY_MARKER}\n{summary}",
+                }
+                if summary and json_bytes([summary_message, *history]) <= max_bytes:
+                    history.insert(0, summary_message)
+            elif trimmed:
                 print(
                     "[Conversation history trimmed to fit "
                     f"{settings.max_history_tokens} tokens]"
@@ -162,14 +223,19 @@ def run_turn(
                     reasoning=reasoning,
                     store=False,
                 ) as stream:
-                    incomplete = None
+                    unfinished = None
                     for event in stream:
                         if event.type == "response.output_text.delta":
                             print(event.delta, end="", flush=True)
-                        elif event.type == "response.incomplete":
+                        elif (
+                            event.type == "response.output_item.added"
+                            and event.item.type == "reasoning"
+                        ):
+                            print("[thinking…]", flush=True)
+                        elif event.type in ("response.incomplete", "response.failed"):
                             # get_final_response() only knows completed responses.
-                            incomplete = event.response
-                    response = incomplete or stream.get_final_response()
+                            unfinished = event.response
+                    response = unfinished or stream.get_final_response()
             else:
                 response = client.responses.create(
                     model=settings.model,
@@ -180,6 +246,8 @@ def run_turn(
                     store=False,
                 )
 
+            if response.usage:
+                output_tokens += response.usage.output_tokens
             if response.usage and response.usage.input_tokens:
                 context_tokens = response.usage.input_tokens
                 # Cached tokens are part of input_tokens: they cost less but
@@ -205,6 +273,10 @@ def run_turn(
                     else "unknown"
                 )
                 print(f"[Response incomplete: {reason}]")
+                return
+            if response.status == "failed":
+                message = response.error.message if response.error else "unknown error"
+                print(f"[Response failed: {message}]")
                 return
 
             tool_calls = [
@@ -244,7 +316,8 @@ def run_turn(
             cached = f", {cached_tokens:,} cached" if cached_tokens else ""
             print(
                 f"[Context: {context_tokens:,} of "
-                f"{settings.max_history_tokens:,} tokens{cached}]"
+                f"{settings.max_history_tokens:,} tokens{cached}; "
+                f"output: {output_tokens:,} tokens]"
             )
 
 

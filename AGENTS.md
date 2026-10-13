@@ -110,10 +110,21 @@ MiniMe is a small interactive coding agent in three flat modules (no package):
     conversation takes the request past 1,024 tokens. Keep that part static
     and keep per-session values in the Environment section, which `main()`
     appends last.
-- A streamed response that stops early ends with a `response.incomplete` event
-  and the SDK's `get_final_response()` then raises, so `run_turn` takes the
-  response from that event. `reasoning` is sent only when `REASONING_EFFORT`
+- A streamed response that does not complete ends with a `response.incomplete`
+  or `response.failed` event and the SDK's `get_final_response()` then raises,
+  so `run_turn` takes the response from that event; both statuses are reported
+  and end the turn. The incomplete case was confirmed against the real API; the
+  failed case could not be produced there and is covered only by the fixture.
+- `[thinking…]` is printed when a stream adds a reasoning item, so it only
+  appears in streaming mode. `reasoning` is sent only when `REASONING_EFFORT`
   is set.
+- When `trim_history` drops whole turns, `run_turn` calls `summarize` and
+  inserts the result as a leading user message starting with `SUMMARY_MARKER`
+  (so a later trim folds it into the next summary). The summary request
+  reuses the normal instructions, tools and reasoning setting with
+  `tool_choice="none"` to stay on the cached prefix. A failed request falls
+  back to dropping; Ctrl-C during it puts the dropped turns back; a summary
+  that is empty or would not fit is not inserted.
 - `run_turn` appends a model response and all of its tool outputs to `history`
   together, so history never holds a tool call without an output. On Ctrl-C or
   an API error, completed steps stay, tool calls that did not finish get

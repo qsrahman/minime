@@ -445,7 +445,10 @@ class TestTokenBudget:
         settings.max_history_tokens = 64_000
         api.replies = [answer("ok", input_tokens=12_345)]
         run(api)
-        assert capsys.readouterr().out == "ok\n[Context: 12,345 of 64,000 tokens]\n"
+        assert (
+            capsys.readouterr().out
+            == "ok\n[Context: 12,345 of 64,000 tokens; output: 7 tokens]\n"
+        )
 
     def test_cached_tokens_are_reported(
         self, api: Api, streaming: bool, capsys: pytest.CaptureFixture[str]
@@ -454,7 +457,7 @@ class TestTokenBudget:
         run(api)
         assert (
             capsys.readouterr().out
-            == "ok\n[Context: 5,805 of 64,000 tokens, 4,608 cached]\n"
+            == "ok\n[Context: 5,805 of 200,000 tokens, 4,608 cached; output: 7 tokens]\n"
         )
 
     def test_cached_tokens_do_not_reduce_the_context_count(self, api: Api) -> None:
@@ -519,19 +522,25 @@ class TestTokenBudget:
         assert run(api).tokens_per_byte == expected
 
     def test_old_turns_are_dropped_to_fit(
-        self,
-        api: Api,
-        settings: config.Config,
-        capsys: pytest.CaptureFixture[str],
+        self, api: Api, settings: config.Config
     ) -> None:
         settings.max_history_tokens = tokens_for(1000)
         history = [{"role": "user", "content": "o" * 2000}]
-        api.replies = [answer("ok")]
+        api.replies = [answer(""), answer("ok")]  # no summary text, then the answer
         conversation = run(api, history)
-        assert kinds(api.requests[0]["input"]) == ["user:new"]
+        assert kinds(api.requests[1]["input"]) == ["user:new"]
         assert kinds(conversation.history) == ["user:new", "message"]
+
+    def test_output_tokens_are_added_up_over_the_turn(
+        self, api: Api, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        api.replies = [
+            response_body(write("a"), input_tokens=100, output_tokens=40),
+            answer(input_tokens=250, output_tokens=15),
+        ]
+        run(api)
         assert (
-            f"[Conversation history trimmed to fit {settings.max_history_tokens} tokens]"
+            "[Context: 250 of 200,000 tokens; output: 55 tokens]"
             in capsys.readouterr().out
         )
 
@@ -609,24 +618,243 @@ class TestTokenBudget:
         settings.max_history_tokens = tokens_for(
             main.json_bytes(new_message) + 5, instructions
         )
-        api.replies = [answer(), answer()]
+        api.replies = [answer(""), answer(), answer()]
         run(api, old_history(), instructions=instructions)
-        assert kinds(api.requests[0]["input"]) == ["user:new"]
+        assert kinds(api.requests[1]["input"]) == ["user:new"]
 
         # Without the instructions the same history fits untouched.
         run(api, old_history())
-        assert kinds(api.requests[1]["input"]) == ["user:old", "user:new"]
+        assert kinds(api.requests[2]["input"]) == ["user:old", "user:new"]
 
     def test_learned_ratio_carries_into_the_next_turn(
         self, api: Api, settings: config.Config
     ) -> None:
         # Room for 2000 bytes of history at 1 token per byte, far more at the default.
         settings.max_history_tokens = overhead() + 2000
-        api.replies = [answer("a" * 10, input_tokens=10_000_000), answer()]
+        api.replies = [answer("a" * 10, input_tokens=10_000_000), answer(""), answer()]
         conversation = run(api, prompt="p" * 1900)
         assert conversation.tokens_per_byte == 1.0
         run(api, prompt="next", conversation=conversation)
-        assert kinds(api.requests[1]["input"]) == ["user:next"]
+        assert kinds(api.requests[2]["input"]) == ["user:next"]
+
+
+def big(letter: str) -> dict[str, Any]:
+    return {"role": "user", "content": letter * 3000}
+
+
+class TestSummaries:
+    """Turns dropped to fit the limit are replaced by a model-written summary."""
+
+    @pytest.fixture(autouse=True)
+    def limit(self, settings: config.Config) -> None:
+        # Room for about 5000 bytes: two big() messages plus a prompt do not fit,
+        # so the first is dropped, leaving space for a short summary.
+        settings.max_history_tokens = tokens_for(5000)
+
+    def test_dropped_turns_are_replaced_by_a_summary(
+        self, api: Api, streaming: bool, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        api.replies = [answer("Earlier: the user sent aaa."), answer("ok")]
+        conversation = run(api, [big("a"), big("b")])
+
+        summary = f"{main.SUMMARY_MARKER}\nEarlier: the user sent aaa."
+        expected = [f"user:{summary}", f"user:{'b' * 3000}", "user:new"]
+        assert kinds(api.requests[1]["input"]) == expected
+        assert kinds(conversation.history) == [*expected, "message"]
+        out = capsys.readouterr().out
+        assert out.startswith("[Summarising earlier conversation to save space…]\nok\n")
+        assert "trimmed to fit" not in out
+        assert "Earlier: the user sent aaa." not in out  # the summary is not shown
+
+    def test_summary_request(self, api: Api, streaming: bool) -> None:
+        api.replies = [answer("summary"), answer("ok")]
+        run(api, [big("a"), big("b")], instructions="Be brief.")
+
+        request, following = api.requests
+        # Exactly what was dropped, followed by the request to summarise it.
+        assert request["input"] == [
+            big("a"),
+            {"role": "user", "content": main.SUMMARY_REQUEST},
+        ]
+        assert request["tool_choice"] == "none"
+        assert "stream" not in request
+        assert request["store"] is False
+        # The same prefix as ordinary requests, so the provider's cache applies.
+        for key in ("model", "instructions", "tools"):
+            assert request[key] == following[key]
+
+    def test_summary_request_uses_the_configured_reasoning_effort(
+        self, api: Api, settings: config.Config
+    ) -> None:
+        settings.reasoning_effort = "low"
+        api.replies = [answer("summary"), answer("ok")]
+        run(api, [big("a"), big("b")])
+        assert api.requests[0]["reasoning"] == {"effort": "low"}
+
+    def test_tool_calls_in_dropped_turns_are_sent_to_the_summariser(
+        self, api: Api
+    ) -> None:
+        api.replies = [
+            response_body(write("a")),
+            answer("done"),
+            answer("summary"),
+            answer(),
+        ]
+        conversation = run(api, prompt="first")
+        conversation.history += [big("b"), big("c")]
+        run(api, prompt="new", conversation=conversation)
+        assert kinds(api.requests[2]["input"])[:4] == [
+            "user:first",
+            "call:a",
+            "output:a:ok",
+            "message",
+        ]
+
+    def test_an_earlier_summary_is_folded_into_the_next_one(self, api: Api) -> None:
+        api.replies = [answer("first summary"), answer("ok")]
+        conversation = run(api, [big("a"), big("b")])
+
+        api.replies = [answer("second summary"), answer("ok")]
+        run(api, prompt="c" * 3000, conversation=conversation)
+
+        second_request = api.requests[2]["input"]
+        assert second_request[0]["content"] == f"{main.SUMMARY_MARKER}\nfirst summary"
+        assert second_request[-1]["content"] == main.SUMMARY_REQUEST
+        contents = [
+            item["content"] for item in conversation.history if isinstance(item, dict)
+        ]
+        assert contents[0] == f"{main.SUMMARY_MARKER}\nsecond summary"
+        assert sum(main.SUMMARY_MARKER in content for content in contents) == 1
+
+    def test_summary_output_tokens_are_counted(
+        self, api: Api, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        api.replies = [
+            answer("summary", input_tokens=900, output_tokens=120),
+            answer("ok", input_tokens=700, output_tokens=5),
+        ]
+        run(api, [big("a"), big("b")])
+        out = capsys.readouterr().out
+        assert "[Context: 700 of" in out  # the real request, not the summary one
+        assert "output: 125 tokens]" in out
+
+    @pytest.mark.parametrize("text", ["", "   \n"])
+    def test_empty_summary_is_not_inserted(self, api: Api, text: str) -> None:
+        api.replies = [answer(text), answer("ok")]
+        run(api, [big("a"), big("b")])
+        assert kinds(api.requests[1]["input"]) == [f"user:{'b' * 3000}", "user:new"]
+
+    def test_summary_that_does_not_fit_is_not_inserted(self, api: Api) -> None:
+        api.replies = [answer("s" * 4000), answer("ok")]
+        run(api, [big("a"), big("b")])
+        assert kinds(api.requests[1]["input"]) == [f"user:{'b' * 3000}", "user:new"]
+
+    def test_failed_summary_falls_back_to_dropping(
+        self, api: Api, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        api.replies = [
+            httpx2.Response(500, json={"error": {"message": "down"}}),
+            answer("ok"),
+        ]
+        conversation = run(api, [big("a"), big("b")])
+        assert kinds(api.requests[1]["input"]) == [f"user:{'b' * 3000}", "user:new"]
+        assert kinds(conversation.history)[-1] == "message"
+        assert (
+            "[No summary (InternalServerError); it was dropped instead]"
+            in capsys.readouterr().out
+        )
+
+    def test_interrupt_while_summarising_restores_the_history(
+        self, api: Api, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        api.replies = [KeyboardInterrupt()]
+        conversation = run(api, [big("a"), big("b")])
+        assert conversation.history == [big("a"), big("b")]
+        assert "[Interrupted; returning to prompt]" in capsys.readouterr().out
+
+    def test_omitting_tool_outputs_needs_no_summary(
+        self, api: Api, workspace: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        (workspace / "big.txt").write_text("x" * 2500)
+        api.replies = [
+            response_body(read("r1", "big.txt")),
+            response_body(read("r2", "big.txt")),
+            answer(),
+        ]
+        run(api)
+        assert len(api.requests) == 3  # no extra request
+        out = capsys.readouterr().out
+        assert "Summarising" not in out
+        assert "[Conversation history trimmed to fit" in out
+        assert api.requests[2]["input"][2]["output"] == main.OMITTED_TOOL_OUTPUT
+
+
+class TestFailedResponses:
+    def test_failed_response_is_reported_and_dropped(
+        self, api: Api, streaming: bool, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        api.replies = [response_body(status="failed", error="The model is overloaded.")]
+        conversation = run(api, old_history())
+        assert kinds(conversation.history) == ["user:old"]
+        assert (
+            capsys.readouterr().out == "[Response failed: The model is overloaded.]\n"
+        )
+
+    def test_failed_response_without_details(
+        self, api: Api, streaming: bool, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        api.replies = [response_body(status="failed")]
+        run(api)
+        assert "[Response failed: unknown error]" in capsys.readouterr().out
+
+    def test_failed_response_after_a_tool_step_keeps_the_step(self, api: Api) -> None:
+        api.replies = [
+            response_body(write("a")),
+            response_body(status="failed", error="boom"),
+        ]
+        conversation = run(api, old_history())
+        assert kinds(conversation.history) == [
+            "user:old",
+            "user:new",
+            "call:a",
+            "output:a:ok",
+        ]
+
+
+class TestThinking:
+    def test_reasoning_is_announced_while_streaming(
+        self, api: Api, settings: config.Config, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        settings.streaming = True
+        api.replies = [response_body(reasoning_item(), message_item("the answer"))]
+        run(api)
+        assert capsys.readouterr().out == "[thinking…]\nthe answer\n"
+
+    def test_each_reasoning_request_is_announced(
+        self, api: Api, settings: config.Config, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        settings.streaming = True
+        api.replies = [
+            response_body(reasoning_item("rs_1"), write("a")),
+            response_body(reasoning_item("rs_2"), message_item("done")),
+        ]
+        run(api)
+        assert capsys.readouterr().out == "[thinking…]\n[thinking…]\ndone\n"
+
+    def test_nothing_is_announced_without_reasoning(
+        self, api: Api, streaming: bool, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        api.replies = [answer("the answer")]
+        run(api)
+        assert "thinking" not in capsys.readouterr().out
+
+    def test_nothing_can_be_announced_without_streaming(
+        self, api: Api, settings: config.Config, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        settings.streaming = False
+        api.replies = [response_body(reasoning_item(), message_item("the answer"))]
+        run(api)
+        assert capsys.readouterr().out == "the answer\n"
 
 
 class TestMain:

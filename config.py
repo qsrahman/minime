@@ -38,7 +38,7 @@ class Config(BaseSettings):
         validation_alias="COMMAND_TIMEOUT_SECONDS",
     )
     max_history_tokens: int = Field(
-        default=64_000,
+        default=200_000,
         gt=0,
         validation_alias="MAX_HISTORY_TOKENS",
     )
