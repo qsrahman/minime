@@ -11,9 +11,24 @@ MiniMe is a small interactive coding agent in three flat modules (no package):
 ## Commands
 - `uv sync` — install dependencies.
 - `uv run main.py` — run the agent (the only entrypoint).
+- `uv run pytest` — run the tests in `tests/` (a few seconds; no network access,
+  API key or `.env` needed).
 - Requires Python 3.14+; run through `uv` so the pinned interpreter is used.
-- No test suite, linter, formatter, or CI is configured. Do not introduce or
-  assume `pytest` / `ruff` / `mypy` commands; ask before adding tooling.
+- No linter, formatter, type checker or CI is configured. Do not introduce or
+  assume `ruff` / `mypy` commands; ask before adding tooling.
+
+## Tests
+- `tests/conftest.py` has an autouse `settings` fixture: every test gets its own
+  `Config` and a temporary workspace, with `get_config` patched in `tools` and
+  `main`. Change behaviour per test by assigning to `settings` fields.
+- Shared helpers there: `site` (a local HTTP server with per-test routes),
+  `FakeClient` / `response` / `tool_call` (scripted model responses), and
+  `kinds` (a one-label-per-item summary of `history`).
+- Do not monkeypatch `tools.MAX_TOOL_OUTPUT_BYTES`: `truncate_to_bytes` binds it
+  as a default argument at import time, so the patch only half applies. Use
+  inputs larger than the real limit instead.
+- `run_command` tests need a POSIX shell and are skipped elsewhere; the timeout
+  tests take one second each because the timeout is a whole number of seconds.
 
 ## Conventions and gotchas
 - Adding a tool (all in `tools.py`): write the handler, a `ToolArguments`

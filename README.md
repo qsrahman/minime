@@ -38,18 +38,18 @@ uv run --project /path/to/minime /path/to/minime/main.py
 
 Configuration can be provided through environment variables or the `.env` file. Environment variables take precedence:
 
-| Variable                  | Required | Default           | Description                                              |
-| ------------------------- | -------- | ----------------- | -------------------------------------------------------- |
-| `OPENAI_API_KEY`          | Yes      |                   | API key used to authenticate with the model provider.    |
-| `OPENAI_MODEL`            | No       | `gpt-5.4-mini`    | Model used for responses.                                |
-| `OPENAI_BASE_URL`         | No       | Provider default  | Optional API-compatible endpoint.                        |
-| `MAX_TURNS_PER_RUN`       | No       | `16`              | Maximum model/tool iterations for each user request.     |
-| `COMMAND_TIMEOUT_SECONDS` | No       | `30`              | Default timeout for shell commands, in seconds.          |
-| `MAX_HISTORY_TURNS`       | No       | `12`              | Number of recent requests kept in the conversation.      |
-| `MAX_HISTORY_BYTES`       | No       | `262144`          | Size limit for the conversation sent to the model.       |
-| `STREAMING`               | No       | `true`            | Print the response as it is generated.                   |
-| `WORKSPACE_ROOT`          | No       | Current directory | File and working-directory paths must stay inside it.    |
-| `BRAVE_API_KEY`           | No       |                   | Brave Search API key. Enables the `web_search` tool.     |
+| Variable                  | Required | Default           | Description                                           |
+| ------------------------- | -------- | ----------------- | ----------------------------------------------------- |
+| `OPENAI_API_KEY`          | Yes      |                   | API key used to authenticate with the model provider. |
+| `OPENAI_MODEL`            | No       | `gpt-5.4-mini`    | Model used for responses.                             |
+| `OPENAI_BASE_URL`         | No       | Provider default  | Optional API-compatible endpoint.                     |
+| `MAX_TURNS_PER_RUN`       | No       | `16`              | Maximum model/tool iterations for each user request.  |
+| `COMMAND_TIMEOUT_SECONDS` | No       | `30`              | Default timeout for shell commands, in seconds.       |
+| `MAX_HISTORY_TURNS`       | No       | `12`              | Number of recent requests kept in the conversation.   |
+| `MAX_HISTORY_BYTES`       | No       | `262144`          | Size limit for the conversation sent to the model.    |
+| `STREAMING`               | No       | `true`            | Print the response as it is generated.                |
+| `WORKSPACE_ROOT`          | No       | Current directory | File and working-directory paths must stay inside it. |
+| `BRAVE_API_KEY`           | No       |                   | Brave Search API key. Enables the `web_search` tool.  |
 
 ## Agent tools
 
@@ -66,4 +66,12 @@ Web pages and search results are passed to the model as they are. A page can con
 
 ## Development
 
-The project declares its runtime dependencies in `pyproject.toml`. Use `uv sync` to install them and `uv run main.py` to start the agent from the project directory. The code is three modules: `config.py` (settings), `tools.py` (the agent's tools) and `main.py` (the conversation loop). There is no test suite.
+The project declares its runtime dependencies in `pyproject.toml`. Use `uv sync` to install them and `uv run main.py` to start the agent from the project directory. The code is three modules: `config.py` (settings), `tools.py` (the agent's tools) and `main.py` (the conversation loop).
+
+Run the tests with:
+
+```sh
+uv run pytest
+```
+
+They need no API key or network access: model responses are scripted and web pages are served from a local test server.

@@ -10,3 +10,13 @@ dependencies = [
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The modules are flat files in the project root, not an installed package.
+pythonpath = ["."]

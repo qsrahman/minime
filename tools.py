@@ -301,7 +301,8 @@ class TextExtractor(HTMLParser):
             else:
                 self.parts.append(f"]({self.link_url})")
             self.link_url = ""
-        if tag in self.BLOCK_TAGS:
+        # <br/> and <hr/> report an end as well as a start; one newline is enough.
+        if tag in self.BLOCK_TAGS and tag not in ("br", "hr"):
             self.parts.append("\n")
 
     def handle_data(self, data: str) -> None:
