@@ -8,6 +8,7 @@ import sys
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, wait
+from datetime import date
 from functools import cache
 from itertools import islice
 from pathlib import Path
@@ -31,6 +32,25 @@ OMITTED_TOOL_OUTPUT = (
     "[Tool output omitted to fit the context budget; "
     "call the tool again if it is still needed.]"
 )
+
+system_prompt = """
+You are an expert AI coding agent.
+
+Operating rules:
+- Use paths relative to the workspace root. File tools reject paths outside it.
+- Prefer the smallest correct change.
+- Validate with the smallest relevant command or check.
+- Do not make unnecessary edits or broad refactors.
+- If a tool call fails, explain the failure clearly and continue with the next best action.
+- Keep the user informed with concise progress updates when a task involves multiple steps.
+- Use the available tools to inspect, edit, and verify the code accurately.
+- Be concise and direct.
+
+Environment:
+- Workspace root: {workspace_root}
+- Operating system: {operating_system}
+- Current date: {current_date}
+"""
 
 
 class Config(BaseSettings):
@@ -84,25 +104,6 @@ def get_config() -> Config:
             field = ".".join(str(part) for part in error["loc"])
             print(f"  - {field}: {error['msg']}", file=sys.stderr)
         raise SystemExit(1) from None
-
-
-system_prompt = """
-You are an expert AI coding agent.
-
-Environment:
-- Workspace root: {workspace_root}
-- Operating system: {operating_system}
-
-Operating rules:
-- Use paths relative to the workspace root. File tools reject paths outside it.
-- Prefer the smallest correct change.
-- Validate with the smallest relevant command or check.
-- Do not make unnecessary edits or broad refactors.
-- If a tool call fails, explain the failure clearly and continue with the next best action.
-- Keep the user informed with concise progress updates when a task involves multiple steps.
-- Use the available tools to inspect, edit, and verify the code accurately.
-- Be concise and direct.
-"""
 
 
 def resolve_workspace_path(path: str) -> Path:
@@ -401,6 +402,7 @@ def run_turn(
     instructions = system_prompt.format(
         workspace_root=settings.workspace_root,
         operating_system=platform.platform(),
+        current_date=date.today().isoformat(),
     )
     previous_history = history.copy()
     history.append({"role": "user", "content": prompt})
