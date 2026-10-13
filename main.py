@@ -19,8 +19,6 @@ try:
 except ImportError:  # not available on Windows
     pass
 
-MAX_HISTORY_TURNS = 12
-MAX_HISTORY_BYTES = 256 * 1024
 INTERRUPTED_TOOL_RESULT = {"ok": False, "message": "Interrupted by the user."}
 OMITTED_TOOL_OUTPUT = (
     "[Tool output omitted to fit the context budget; "
@@ -49,6 +47,7 @@ Environment:
 
 
 def trim_history(history: ResponseInputParam) -> tuple[bool, bool]:
+    settings = get_config()
     trimmed = False
     while True:
         user_turn_starts = [
@@ -60,8 +59,8 @@ def trim_history(history: ResponseInputParam) -> tuple[bool, bool]:
             json.dumps(history, ensure_ascii=False, default=str).encode("utf-8")
         )
         if (
-            len(user_turn_starts) <= MAX_HISTORY_TURNS
-            and history_bytes <= MAX_HISTORY_BYTES
+            len(user_turn_starts) <= settings.max_history_turns
+            and history_bytes <= settings.max_history_bytes
         ):
             return trimmed, False
 
@@ -120,7 +119,8 @@ def run_turn(
             trimmed, current_turn_dropped = trim_history(history)
             if trimmed:
                 print(
-                    f"[Conversation history trimmed to fit {MAX_HISTORY_BYTES} bytes]"
+                    "[Conversation history trimmed to fit "
+                    f"{settings.max_history_bytes} bytes]"
                 )
             if current_turn_dropped:
                 print("[Turn stopped because its history exceeded the context budget]")

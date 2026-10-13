@@ -36,6 +36,16 @@ class Config(BaseSettings):
         gt=0,
         validation_alias="COMMAND_TIMEOUT_SECONDS",
     )
+    max_history_turns: int = Field(
+        default=12,
+        gt=0,
+        validation_alias="MAX_HISTORY_TURNS",
+    )
+    max_history_bytes: int = Field(
+        default=256 * 1024,
+        gt=0,
+        validation_alias="MAX_HISTORY_BYTES",
+    )
     streaming: bool = Field(
         default=True,
         validation_alias="STREAMING",

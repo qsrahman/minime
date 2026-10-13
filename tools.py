@@ -46,7 +46,7 @@ def truncate_to_bytes(text: str) -> str:
 def read_file(
     path: str, start_line: int | None = None, end_line: int | None = None
 ) -> dict[str, Any]:
-    """Read a file, optionally limiting the result to an inclusive line range."""
+    """Read a file, optionally limited to an inclusive line range. Long files are returned in parts: pass next_start_line as start_line to read the next part."""
     if start_line is not None and start_line < 1:
         raise ValueError("start_line must be greater than zero")
     if end_line is not None and end_line < 1:
@@ -57,17 +57,32 @@ def read_file(
     file_path = resolve_workspace_path(path)
     first_line = 1 if start_line is None else start_line
 
+    lines: list[str] = []
+    size = 0
+    next_start_line = None
     with file_path.open(encoding="utf-8") as file:
-        content = "".join(islice(file, first_line - 1, end_line))
+        for line in islice(file, first_line - 1, end_line):
+            size += len(line.encode("utf-8"))
+            if size > MAX_TOOL_OUTPUT_BYTES and lines:
+                next_start_line = first_line + len(lines)
+                break
+            lines.append(line)
 
+    content = "".join(lines)
     truncated_content = truncate_to_bytes(content)
     if len(truncated_content) < len(content):
+        # Only a single line longer than the limit gets cut mid-line.
         content = (
-            f"{truncated_content}\n[content truncated after {MAX_TOOL_OUTPUT_BYTES} "
-            "bytes; use start_line and end_line to read the rest]"
+            f"{truncated_content}\n[line {first_line} truncated after "
+            f"{MAX_TOOL_OUTPUT_BYTES} bytes]"
         )
 
-    return {"ok": True, "content": content}
+    return {
+        "ok": True,
+        "content": content,
+        "start_line": first_line,
+        "next_start_line": next_start_line,
+    }
 
 
 def write_file(path: str, content: str, append: bool = False) -> dict[str, Any]:
@@ -116,17 +131,26 @@ def edit_file(
 
 
 def read_bounded_output(stream: IO[Any]) -> str:
-    output = bytearray()
-    truncated = False
+    """Read a stream to its end, keeping only the first and last halves of the limit."""
+    half = MAX_TOOL_OUTPUT_BYTES // 2
+    head = bytearray()
+    tail = bytearray()
+    omitted = 0
     while chunk := stream.read(8192):
-        remaining = MAX_TOOL_OUTPUT_BYTES - len(output)
-        output.extend(chunk[:remaining])
-        truncated = truncated or len(chunk) > remaining
+        room = half - len(head)
+        head.extend(chunk[:room])
+        tail.extend(chunk[room:])
+        if len(tail) > half:
+            omitted += len(tail) - half
+            del tail[:-half]
 
-    result = output.decode("utf-8", errors="replace")
-    if truncated:
-        result += f"\n[output truncated after {MAX_TOOL_OUTPUT_BYTES} bytes]"
-    return result
+    if not omitted:
+        return (head + tail).decode("utf-8", errors="replace")
+    return (
+        head.decode("utf-8", errors="replace")
+        + f"\n[... {omitted} bytes omitted ...]\n"
+        + tail.decode("utf-8", errors="replace")
+    )
 
 
 def kill_process_tree(process: subprocess.Popen[bytes]) -> None:
@@ -306,11 +330,17 @@ def fetch_page(url: str) -> tuple[str, str, str]:
         ):
             raise ValueError(f"unsupported content type: {content_type or 'unknown'}")
 
+        # The client timeout is per read, so a slow trickle needs its own limit.
+        deadline = time.monotonic() + WEB_TIMEOUT_SECONDS
         body = bytearray()
         for chunk in response.iter_bytes():
             body.extend(chunk)
             if len(body) >= MAX_FETCH_BYTES:
                 break
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"download took longer than {WEB_TIMEOUT_SECONDS} seconds"
+                )
         text = body[:MAX_FETCH_BYTES].decode(
             response.encoding or "utf-8", errors="replace"
         )
