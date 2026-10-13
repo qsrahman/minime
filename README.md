@@ -57,7 +57,7 @@ Configuration can be provided through environment variables or the `.env` file. 
 - `write_file` creates or replaces a workspace file, or appends to it.
 - `edit_file` replaces a text fragment; by default, the fragment must occur exactly once.
 - `run_command` runs a shell command from the workspace, with an optional working directory and timeout. Commands get no standard input. When stdout or stderr exceeds 16 KB, the first and last 8 KB are kept and the middle is omitted.
-- `web_fetch` downloads a web page (up to 2 MB, within 20 seconds) and returns its text, 16 KB at a time. HTML is reduced to readable text with links kept; navigation, headers, footers and sidebars are dropped.
+- `web_fetch` downloads a web page (up to 2 MB, within 20 seconds) and returns its text, 16 KB at a time. If the download exceeds 2 MB, the result sets `truncated` to `true`. HTML is reduced to readable text with links kept; navigation, headers, footers and sidebars are dropped.
 - `web_search` searches the web with the [Brave Search API](https://brave.com/search/api/). It is only offered to the model when `BRAVE_API_KEY` is set.
 
 File and working-directory paths are restricted to the workspace root. This is a path check, **not a security sandbox**: shell commands run with the same permissions as the current user and may access or modify other files or resources. Only use MiniMe with prompts and model providers you trust, and review commands and file changes carefully.

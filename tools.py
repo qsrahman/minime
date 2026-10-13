@@ -38,9 +38,16 @@ def resolve_workspace_path(path: str) -> Path:
     return resolved_path
 
 
-def truncate_to_bytes(text: str) -> str:
-    """Cut text to MAX_TOOL_OUTPUT_BYTES without splitting a character."""
-    return text.encode("utf-8")[:MAX_TOOL_OUTPUT_BYTES].decode("utf-8", errors="ignore")
+def truncate_to_bytes(text: str, max_bytes: int = MAX_TOOL_OUTPUT_BYTES) -> str:
+    """Keep the first max_bytes of text without splitting a character."""
+    return text.encode("utf-8")[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def truncate_from_bytes(text: str, max_bytes: int) -> str:
+    """Keep the last max_bytes of text without splitting a character."""
+    if max_bytes <= 0:
+        return ""
+    return text.encode("utf-8")[-max_bytes:].decode("utf-8", errors="ignore")
 
 
 def read_file(
@@ -72,9 +79,13 @@ def read_file(
     truncated_content = truncate_to_bytes(content)
     if len(truncated_content) < len(content):
         # Only a single line longer than the limit gets cut mid-line.
+        marker = f"\n[line {first_line} truncated; output limit reached]"
         content = (
-            f"{truncated_content}\n[line {first_line} truncated after "
-            f"{MAX_TOOL_OUTPUT_BYTES} bytes]"
+            truncate_to_bytes(
+                truncated_content,
+                MAX_TOOL_OUTPUT_BYTES - len(marker.encode("utf-8")),
+            )
+            + marker
         )
 
     return {
@@ -145,11 +156,17 @@ def read_bounded_output(stream: IO[Any]) -> str:
             del tail[:-half]
 
     if not omitted:
-        return (head + tail).decode("utf-8", errors="replace")
+        return truncate_to_bytes((head + tail).decode("utf-8", errors="replace"))
+
+    marker = truncate_to_bytes(f"\n[... {omitted} bytes omitted ...]\n")
+    remaining = MAX_TOOL_OUTPUT_BYTES - len(marker.encode("utf-8"))
+    head_text = head.decode("utf-8", errors="replace")
+    tail_text = tail.decode("utf-8", errors="replace")
+    head_budget = remaining // 2
     return (
-        head.decode("utf-8", errors="replace")
-        + f"\n[... {omitted} bytes omitted ...]\n"
-        + tail.decode("utf-8", errors="replace")
+        truncate_to_bytes(head_text, head_budget)
+        + marker
+        + truncate_from_bytes(tail_text, remaining - head_budget)
     )
 
 
@@ -314,7 +331,7 @@ def html_to_text(markup: str, base_url: str = "") -> tuple[str, str]:
 
 
 @lru_cache(maxsize=1)
-def fetch_page(url: str) -> tuple[str, str, str]:
+def fetch_page(url: str) -> tuple[str, str, str, bool]:
     """Download a page and return its final URL, title, and text."""
     with httpx2.stream(
         "GET",
@@ -333,25 +350,29 @@ def fetch_page(url: str) -> tuple[str, str, str]:
         # The client timeout is per read, so a slow trickle needs its own limit.
         deadline = time.monotonic() + WEB_TIMEOUT_SECONDS
         body = bytearray()
+        truncated = False
         for chunk in response.iter_bytes():
-            body.extend(chunk)
-            if len(body) >= MAX_FETCH_BYTES:
-                break
             if time.monotonic() > deadline:
                 raise TimeoutError(
                     f"download took longer than {WEB_TIMEOUT_SECONDS} seconds"
                 )
+            remaining = MAX_FETCH_BYTES - len(body)
+            if len(chunk) > remaining:
+                body.extend(chunk[:remaining])
+                truncated = True
+                break
+            body.extend(chunk)
         text = body[:MAX_FETCH_BYTES].decode(
             response.encoding or "utf-8", errors="replace"
         )
         title = ""
         if "html" in content_type:
             title, text = html_to_text(text, str(response.url))
-        return str(response.url), title, text
+        return str(response.url), title, text, truncated
 
 
 def web_fetch(url: str, offset: int | None = None) -> dict[str, Any]:
-    """Fetch a web page and return its text. Long pages are returned in parts: pass next_offset as offset to read the next part."""
+    """Fetch a page in parts; pass next_offset as offset. truncated marks downloads over 2 MB."""
     offset = offset or 0
     if offset < 0:
         raise ValueError("offset must not be negative")
@@ -359,7 +380,7 @@ def web_fetch(url: str, offset: int | None = None) -> dict[str, Any]:
         # Only continuation calls may reuse the cached copy of a page.
         fetch_page.cache_clear()
 
-    final_url, title, text = fetch_page(url)
+    final_url, title, text, truncated = fetch_page(url)
     content = truncate_to_bytes(text[offset : offset + MAX_TOOL_OUTPUT_BYTES])
     end = offset + len(content)
     return {
@@ -369,6 +390,7 @@ def web_fetch(url: str, offset: int | None = None) -> dict[str, Any]:
         "content": content,
         "total_chars": len(text),
         "next_offset": end if end < len(text) else None,
+        "truncated": truncated,
     }
 
 
