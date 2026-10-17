@@ -39,7 +39,6 @@ markers = [
 [tool.ruff]
 # So imports of the project's own modules sort as first-party.
 src = ["src", "tests"]
-target-version = "py314"
 
 [tool.ruff.lint]
 # BLE and SIM are the rules the existing `# noqa` comments refer to; RUF100

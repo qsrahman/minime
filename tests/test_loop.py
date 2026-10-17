@@ -141,14 +141,14 @@ class TestAnswers:
         conversation = run(api, old_history())
         assert kinds(conversation.history) == ["user:old", "user:new", "message"]
         assert conversation.history[2].content[0].text == "the answer"
-        assert capsys.readouterr().out == "the answer\n\n"
+        assert capsys.readouterr().out == "\nthe answer\n\n"
 
     def test_text_alongside_tool_calls_is_printed(
         self, api: Api, streaming: bool, capsys: pytest.CaptureFixture[str]
     ) -> None:
         api.replies = [response_body(message_item("checking"), write("a")), answer()]
         run(api)
-        assert capsys.readouterr().out == "checking\ndone\n\n"
+        assert capsys.readouterr().out == "\nchecking\ndone\n\n"
 
     def test_empty_response_leaves_no_trace(
         self, api: Api, streaming: bool, capsys: pytest.CaptureFixture[str]
@@ -156,7 +156,7 @@ class TestAnswers:
         api.replies = [response_body()]
         conversation = run(api, old_history())
         assert kinds(conversation.history) == ["user:old"]
-        assert capsys.readouterr().out == "\n"
+        assert capsys.readouterr().out == "\n\n"
 
     def test_earlier_answers_are_replayed_on_the_next_turn(
         self, api: Api, streaming: bool
@@ -185,7 +185,9 @@ class TestAnswers:
         api.replies = [answer("partial", status="incomplete", reason=reason)]
         conversation = run(api, old_history())
         assert kinds(conversation.history) == ["user:old"]
-        assert capsys.readouterr().out == f"partial\n[Response incomplete: {shown}]\n\n"
+        assert (
+            capsys.readouterr().out == f"\npartial\n[Response incomplete: {shown}]\n\n"
+        )
 
     def test_incomplete_response_after_a_tool_step_keeps_the_step(
         self, api: Api
@@ -471,7 +473,7 @@ class TestTokenBudget:
         run(api)
         assert (
             capsys.readouterr().out
-            == "ok\n[Context: 12,345 of 64,000 tokens; output: 7 tokens]\n\n"
+            == "\nok\n[Context: 12,345 of 64,000 tokens; output: 7 tokens]\n\n"
         )
 
     def test_cached_tokens_are_reported(
@@ -481,7 +483,7 @@ class TestTokenBudget:
         run(api)
         assert (
             capsys.readouterr().out
-            == "ok\n[Context: 5,805 of 200,000 tokens, 4,608 cached; output: 7 tokens]\n\n"
+            == "\nok\n[Context: 5,805 of 200,000 tokens, 4,608 cached; output: 7 tokens]\n\n"
         )
 
     def test_cached_tokens_do_not_reduce_the_context_count(
@@ -691,7 +693,9 @@ class TestSummaries:
         assert kinds(api.requests[1]["input"]) == expected
         assert kinds(conversation.history) == [*expected, "message"]
         out = capsys.readouterr().out
-        assert out.startswith("[Summarising earlier conversation to save space…]\nok\n")
+        assert out.startswith(
+            "\n[Summarising earlier conversation to save space…]\nok\n"
+        )
         assert "trimmed to fit" not in out
         assert "Earlier: the user sent aaa." not in out  # the summary is not shown
 
@@ -838,7 +842,8 @@ class TestFailedResponses:
         conversation = run(api, old_history())
         assert kinds(conversation.history) == ["user:old"]
         assert (
-            capsys.readouterr().out == "[Response failed: The model is overloaded.]\n\n"
+            capsys.readouterr().out
+            == "\n[Response failed: The model is overloaded.]\n\n"
         )
 
     def test_failed_response_without_details(
@@ -869,7 +874,7 @@ class TestThinking:
         settings.streaming = True
         api.replies = [response_body(reasoning_item(), message_item("the answer"))]
         run(api)
-        assert capsys.readouterr().out == "[thinking…]\nthe answer\n\n"
+        assert capsys.readouterr().out == "\n[thinking…]\nthe answer\n\n"
 
     def test_each_reasoning_request_is_announced(
         self, api: Api, settings: config.Config, capsys: pytest.CaptureFixture[str]
@@ -880,7 +885,7 @@ class TestThinking:
             response_body(reasoning_item("rs_2"), message_item("done")),
         ]
         run(api)
-        assert capsys.readouterr().out == "[thinking…]\n[thinking…]\ndone\n\n"
+        assert capsys.readouterr().out == "\n[thinking…]\n[thinking…]\ndone\n\n"
 
     def test_nothing_is_announced_without_reasoning(
         self, api: Api, streaming: bool, capsys: pytest.CaptureFixture[str]
@@ -895,7 +900,7 @@ class TestThinking:
         settings.streaming = False
         api.replies = [response_body(reasoning_item(), message_item("the answer"))]
         run(api)
-        assert capsys.readouterr().out == "the answer\n\n"
+        assert capsys.readouterr().out == "\nthe answer\n\n"
 
 
 def test_system_prompt_has_no_stray_escape_characters() -> None:
@@ -995,7 +1000,7 @@ class TestRepl:
         main.main()
         out = capsys.readouterr().out
         assert f"model: banner-model | workspace: {settings.workspace_root}" in out
-        assert "'/reset' to start a new conversation" in out
+        assert "Type /help to list commands." in out
         assert out.endswith("\nGoodbye!\n")
         assert repl["client_kwargs"] == {
             "api_key": "test-key",
@@ -1063,12 +1068,54 @@ class TestRepl:
         # /reset itself is not sent to the model.
         assert repl["prompts"] == ["one", "two", "three"]
         assert kinds(repl["agents"][0].context.history) == ["user:three"]
-        assert "[Conversation cleared]" in capsys.readouterr().out
+        assert "[History reset]" in capsys.readouterr().out
 
     def test_reset_keeps_the_learned_token_ratio(self, repl: dict[str, Any]) -> None:
         repl["inputs"] = ["learn", "/reset", "/exit"]
         main.main()
         assert repl["agents"][0].context.tokens_per_byte == 0.5
+
+    def test_help_lists_every_command(
+        self, repl: dict[str, Any], capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repl["inputs"] = ["/help", "/exit"]
+        main.main()
+        out = capsys.readouterr().out
+        for command in ("/clear", "/exit", "/help", "/quit", "/reset"):
+            assert f"  {command} " in out
+        assert repl["prompts"] == []
+
+    @pytest.mark.parametrize("tty", [True, False])
+    def test_clear_wipes_the_screen_and_keeps_the_history(
+        self,
+        repl: dict[str, Any],
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+        tty: bool,
+    ) -> None:
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: tty)
+        repl["inputs"] = ["one", "/clear", "two", "/exit"]
+        main.main()
+        assert repl["prompts"] == ["one", "two"]
+        assert kinds(repl["agents"][0].context.history) == ["user:one", "user:two"]
+        # Escape codes only reach a terminal, never redirected output.
+        assert ("\033[2J" in capsys.readouterr().out) is tty
+
+    @pytest.mark.parametrize("word", ["/rest", "/tmp/notes.txt"])
+    def test_unknown_command_is_reported_and_not_sent(
+        self, repl: dict[str, Any], capsys: pytest.CaptureFixture[str], word: str
+    ) -> None:
+        repl["inputs"] = [word, "/exit"]
+        main.main()
+        assert repl["prompts"] == []
+        assert f"[Unknown command: {word}. Type /help" in capsys.readouterr().out
+
+    def test_slash_prompt_with_spaces_goes_to_the_model(
+        self, repl: dict[str, Any]
+    ) -> None:
+        repl["inputs"] = ["/usr/bin is missing", "/exit"]
+        main.main()
+        assert repl["prompts"] == ["/usr/bin is missing"]
 
 
 class TestNotices:

@@ -1,5 +1,6 @@
 import signal
 import sys
+from collections.abc import Callable
 from types import FrameType
 
 from pydantic import ValidationError
@@ -18,7 +19,16 @@ class Repl:
 
     def __init__(self, agent: Agent) -> None:
         self.agent = agent
+        self.running = False
         self.at_line_start = True
+        # Each command maps to its handler and the description shown by /help.
+        self.commands: dict[str, tuple[Callable[[], None], str]] = {
+            "/clear": (self.clear, "clear the screen"),
+            "/exit": (self.stop, "end the session"),
+            "/help": (self.help, "list commands"),
+            "/quit": (self.stop, "end the session"),
+            "/reset": (self.reset, "clear the conversation history"),
+        }
 
     def run(self) -> None:
         """Read and handle prompts until the user quits."""
@@ -26,27 +36,29 @@ class Repl:
         print(
             f"AI coding agent started | model: {config.model} | "
             f"workspace: {config.workspace_root}\n"
-            "Type '/exit' or '/quit' to stop, '/reset' to start a new conversation.\n"
+            "Type /help to list commands.\n"
         )
 
-        while True:
+        self.running = True
+        while self.running:
             try:
                 prompt = input("> ").strip()
             except KeyboardInterrupt, EOFError:
                 break
-
             if not prompt:
                 continue
 
-            command = prompt.lower()
-            if command in {"/exit", "/quit"}:
-                break
-            if command == "/reset":
-                self.agent.context.reset()
-                print("[Conversation cleared]\n")
-                continue
-
-            self.ask(prompt)
+            command = self.commands.get(prompt.lower())
+            if command:
+                handler, _ = command
+                handler()
+            # A single word starting with "/" is a mistyped command, not a
+            # prompt; longer input such as "/usr/bin is missing" still goes
+            # to the model.
+            elif prompt.startswith("/") and " " not in prompt:
+                print(f"[Unknown command: {prompt}. Type /help to list commands.]\n")
+            else:
+                self.ask(prompt)
 
         print("\nGoodbye!")
 
@@ -63,6 +75,7 @@ class Repl:
                 previous_hook(unraisable)
 
         sys.unraisablehook = quiet_lost_interrupt
+        print()
         try:
             self.agent.run_turn(prompt, on_text=self.write, on_notice=self.notice)
         except TurnError as exc:
@@ -101,6 +114,29 @@ class Repl:
         if not self.at_line_start:
             self.write("\n")
         print(f"[{text}]")
+
+    def help(self) -> None:
+        """List the available commands."""
+        width = max(len(name) for name in self.commands)
+        for name, (_, description) in self.commands.items():
+            print(f"  {name:<{width}}  {description}")
+        print()
+
+    def reset(self) -> None:
+        """Clear the conversation history."""
+        self.agent.context.reset()
+        print("[History reset]\n")
+
+    def clear(self) -> None:
+        """Clear the terminal screen; the history is kept."""
+        # Clear the screen and scrollback, then move the cursor home, like
+        # `clear`; not when output is redirected, where the codes are garbage.
+        if sys.stdout.isatty():
+            print("\033[2J\033[3J\033[H", end="", flush=True)
+
+    def stop(self) -> None:
+        """Leave the loop after the current command."""
+        self.running = False
 
 
 def main() -> None:

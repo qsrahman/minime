@@ -71,7 +71,7 @@ def test_banner_turn_commands_and_exit(start: Callable[..., Terminal]) -> None:
     assert "Context" not in terminal.screen
 
     terminal.type("/reset")
-    terminal.expect(r"\[Conversation cleared\][\s\S]*" + PROMPT)
+    terminal.expect(r"\[History reset\][\s\S]*" + PROMPT)
 
     terminal.type("/exit")
     terminal.expect(r"Goodbye!")
@@ -88,7 +88,7 @@ def test_memory_and_reset(start: Callable[..., Terminal]) -> None:
     )
 
     terminal.type("/reset")
-    terminal.expect(r"\[Conversation cleared\][\s\S]*" + PROMPT)
+    terminal.expect(r"\[History reset\][\s\S]*" + PROMPT)
     screen = answer(
         terminal,
         "Without using any tools: what is my cat called? If you do not know, "

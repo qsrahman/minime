@@ -262,7 +262,7 @@ def test_the_program_end_to_end(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert "marker-7431" in result.stdout
     assert "[Context: " in result.stdout
-    assert "[Conversation cleared]" in result.stdout
+    assert "[History reset]" in result.stdout
     assert result.stdout.rstrip().endswith("Goodbye!")
 
 

@@ -22,7 +22,8 @@ constructors; there is no global state:
   loop; prints nothing, reports through `on_text` / `on_notice` callbacks and
   raises `TurnError`), plus `build_toolbox(config)`, which assembles the
   standard tools. Imports `config`, `context` and the tool modules.
-- `main.py` — `Repl` (all terminal input and output) and the entry point
+- `main.py` — `Repl` (all terminal input and output, and the slash
+  commands in its `commands` table, which `/help` lists) and the entry point
   `main()`, which loads `Config`, reporting invalid settings, and runs
   `Repl(Agent(config))`. Nothing imports `main` except the tests.
 
@@ -102,6 +103,10 @@ constructors; there is no global state:
   from the arguments model and the subclass docstring is the description sent
   to the model. `run` raises on bad input; `Toolbox.execute` turns any
   exception into `{"ok": False, "message": ...}`.
+- Adding a REPL command: add a method to `Repl` and an entry in
+  `Repl.commands` (the name, lower-case with a leading `/`, maps to the
+  handler and its `/help` description). Commands take no arguments; a single
+  unknown `/word` is reported, not sent to the model.
 - Tool schemas use OpenAI `strict: True`, so every argument field must be
   required: declare optional ones as `X | None` with no default.
 - Config uses `pydantic-settings` `validation_alias`, so field names differ from
