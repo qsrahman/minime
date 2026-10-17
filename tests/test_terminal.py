@@ -8,9 +8,6 @@ The model is a local HTTP server playing back scripted replies.
 
 import json
 import os
-import pty
-import re
-import select
 import sys
 import threading
 import time
@@ -21,12 +18,24 @@ from typing import Any
 
 import pytest
 
-from conftest import call_item, kinds, message_item, response_body, stream_events
+from conftest import (
+    CTRL_C,
+    CTRL_D,
+    PROMPT_AGAIN,
+    Terminal,
+    call_item,
+    kinds,
+    message_item,
+    process_is_gone,
+    response_body,
+    stream_events,
+)
 
-pytestmark = pytest.mark.skipif(os.name != "posix", reason="needs a pseudo-terminal")
+pytestmark = [
+    pytest.mark.pty,
+    pytest.mark.skipif(os.name != "posix", reason="needs a pseudo-terminal"),
+]
 
-CTRL_C = b"\x03"
-CTRL_D = b"\x04"
 # Run the real loop, but take every setting from the environment the test
 # builds instead of the developer's .env file.
 LAUNCH = (
@@ -96,69 +105,6 @@ def held(body: dict[str, Any]) -> dict[str, Any]:
     return {"body": body, "held": True}
 
 
-class Terminal:
-    """The agent running on a pseudo-terminal."""
-
-    def __init__(self, endpoint: Endpoint, workspace: Path) -> None:
-        environment = {
-            "OPENAI_API_KEY": "test-key",
-            "OPENAI_BASE_URL": endpoint.url,
-            "WORKSPACE_ROOT": str(workspace),
-            "TERM": "dumb",
-        }
-        self.pid, self.fd = pty.fork()
-        if self.pid == 0:  # the child: become the agent
-            os.environ.update(environment)
-            os.execv(sys.executable, [sys.executable, "-c", LAUNCH])
-        self.screen = ""
-        self.exit_code: int | None = None
-
-    def read(self, seconds: float) -> None:
-        if select.select([self.fd], [], [], seconds)[0]:
-            try:
-                self.screen += os.read(self.fd, 4096).decode("utf-8", "replace")
-            except OSError:  # the child closed its side
-                time.sleep(seconds)
-
-    def expect(self, pattern: str, timeout: float = 20) -> None:
-        deadline = time.monotonic() + timeout
-        while not re.search(pattern, self.screen):
-            assert time.monotonic() < deadline, (
-                f"terminal never showed {pattern!r}; it shows:\n{self.screen}"
-            )
-            self.read(0.1)
-
-    def wait_for(self, condition: Any, what: str, timeout: float = 20) -> None:
-        """Wait for something outside the terminal, still draining its output."""
-        deadline = time.monotonic() + timeout
-        while not condition():
-            assert time.monotonic() < deadline, (
-                f"{what}; terminal shows:\n{self.screen}"
-            )
-            self.read(0.05)
-
-    def type(self, keys: bytes | str) -> None:
-        self.screen = ""
-        os.write(self.fd, keys if isinstance(keys, bytes) else f"{keys}\r".encode())
-
-    def wait_for_exit(self, timeout: float = 20) -> int:
-        deadline = time.monotonic() + timeout
-        while self.exit_code is None:
-            pid, status = os.waitpid(self.pid, os.WNOHANG)
-            if pid:
-                self.exit_code = os.waitstatus_to_exitcode(status)
-            else:
-                assert time.monotonic() < deadline, "the agent did not exit"
-                self.read(0.05)
-        return self.exit_code
-
-    def close(self) -> None:
-        if self.exit_code is None:
-            os.kill(self.pid, 9)
-            os.waitpid(self.pid, 0)
-        os.close(self.fd)
-
-
 @pytest.fixture
 def endpoint() -> Iterator[Endpoint]:
     server = Endpoint()
@@ -171,24 +117,19 @@ def terminal(endpoint: Endpoint, workspace: Path) -> Iterator[Terminal]:
     # Fork the agent before the server thread exists: forking a process that
     # has other threads running is unsafe. The port is already bound, so
     # requests made before start() simply wait.
-    session = Terminal(endpoint, workspace)
+    env = {
+        **os.environ,
+        "OPENAI_API_KEY": "test-key",
+        "OPENAI_BASE_URL": endpoint.url,
+        "WORKSPACE_ROOT": str(workspace),
+    }
+    session = Terminal([sys.executable, "-c", LAUNCH], env, workspace)
     endpoint.start()
     try:
         session.expect(r"> $")
         yield session
     finally:
         session.close()
-
-
-def process_is_gone(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    return False
-
-
-PROMPT_AGAIN = r"\[Interrupted; returning to prompt\][\s\S]*> $"
 
 
 def test_ctrl_c_during_a_streamed_answer_returns_to_the_prompt(

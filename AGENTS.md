@@ -83,6 +83,13 @@ constructors; there is no global state:
   facts), not wording. `SHELL_SETTINGS` captures the shell's settings before
   the autouse fixture clears them. `conftest.py` sorts live tests last because
   their real clients start threads that would break the pty tests' fork.
+- `tests/test_live_repl.py` (live) types at the real `minime` on a
+  pseudo-terminal against the `.env` model: commands, memory and `/clear`,
+  Ctrl-C while an answer streams, while a command runs and while the model
+  thinks, a double Ctrl-C, and quitting. The shared `Terminal` helper is in
+  `conftest.py`; pseudo-terminal tests carry the `pty` marker and are sorted
+  first within the offline and the live group, before real clients start
+  threads.
 - `run_command` tests need a POSIX shell and are skipped elsewhere; the timeout
   tests take one second each because the timeout is a whole number of seconds.
 
@@ -193,6 +200,14 @@ constructors; there is no global state:
   an API error, completed steps stay, tool calls that did not finish get
   an "Interrupted by the user." result, and a prompt with no completed step is removed;
   the exception then propagates to `Repl`, which reports it.
+- Ctrl-C during a turn: `Repl.ask` installs its own SIGINT handler, which sets
+  `Agent.stop_requested` as well as raising `KeyboardInterrupt`. The raise can
+  be lost: if it lands while pydantic builds the SDK's stream-event models,
+  pydantic swallows it ("Exception ignored") and the answer carried on (seen
+  live in 3 of 4 runs). `Agent.stop_if_requested()` therefore runs before each
+  stream event, after each response and before each tool call. `Repl.ask` also
+  silences unraisable `KeyboardInterrupt`s for the turn, so that case prints no
+  traceback; other unraisable errors still reach the previous hook.
 - `Agent.usage` holds the token counts of the last turn; `Repl.ask` prints the
   `[Context: …]` line from it after reporting any error.
 - `.env` is gitignored but present locally, overriding the model and base URL to a

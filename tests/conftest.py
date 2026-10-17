@@ -1,5 +1,10 @@
 import json
+import os
+import pty
+import re
+import select
 import threading
+import time
 from collections.abc import Callable, Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -39,9 +44,19 @@ ENV_VARS = (
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Run live tests last. Their real API clients start system threads that
-    outlive them, which would make the pseudo-terminal tests' fork unsafe."""
-    items.sort(key=lambda item: item.get_closest_marker("live") is not None)
+    """Run live tests last, and pseudo-terminal tests first within each group.
+
+    Real API clients start system threads that outlive their tests, which
+    makes the fork a pseudo-terminal test starts with unsafe.
+    """
+
+    def order(item: pytest.Item) -> tuple[bool, bool]:
+        return (
+            item.get_closest_marker("live") is not None,
+            item.get_closest_marker("pty") is None,
+        )
+
+    items.sort(key=order)
 
 
 @pytest.fixture(autouse=True)
@@ -422,3 +437,73 @@ def kinds(items: list[Any]) -> list[str]:
         else:
             labels.append(kind)
     return labels
+
+
+CTRL_C = b"\x03"
+CTRL_D = b"\x04"
+PROMPT_AGAIN = r"\[Interrupted; returning to prompt\][\s\S]*> $"
+
+
+def process_is_gone(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    return False
+
+
+class Terminal:
+    """A program running on a pseudo-terminal, typed at like a user would."""
+
+    def __init__(self, argv: list[str], env: dict[str, str], cwd: Path) -> None:
+        self.pid, self.fd = pty.fork()
+        if self.pid == 0:  # the child: become the agent, touching as little as possible
+            os.chdir(cwd)
+            os.execve(argv[0], argv, {**env, "TERM": "dumb"})
+        self.screen = ""
+        self.exit_code: int | None = None
+
+    def read(self, seconds: float) -> None:
+        if select.select([self.fd], [], [], seconds)[0]:
+            try:
+                self.screen += os.read(self.fd, 4096).decode("utf-8", "replace")
+            except OSError:  # the child closed its side
+                time.sleep(seconds)
+
+    def expect(self, pattern: str, timeout: float = 20) -> None:
+        deadline = time.monotonic() + timeout
+        while not re.search(pattern, self.screen):
+            assert time.monotonic() < deadline, (
+                f"terminal never showed {pattern!r}; it shows:\n{self.screen}"
+            )
+            self.read(0.1)
+
+    def wait_for(self, condition: Any, what: str, timeout: float = 20) -> None:
+        """Wait for something outside the terminal, still draining its output."""
+        deadline = time.monotonic() + timeout
+        while not condition():
+            assert time.monotonic() < deadline, (
+                f"{what}; terminal shows:\n{self.screen}"
+            )
+            self.read(0.05)
+
+    def type(self, keys: bytes | str) -> None:
+        self.screen = ""
+        os.write(self.fd, keys if isinstance(keys, bytes) else f"{keys}\r".encode())
+
+    def wait_for_exit(self, timeout: float = 20) -> int:
+        deadline = time.monotonic() + timeout
+        while self.exit_code is None:
+            pid, status = os.waitpid(self.pid, os.WNOHANG)
+            if pid:
+                self.exit_code = os.waitstatus_to_exitcode(status)
+            else:
+                assert time.monotonic() < deadline, "the agent did not exit"
+                self.read(0.05)
+        return self.exit_code
+
+    def close(self) -> None:
+        if self.exit_code is None:
+            os.kill(self.pid, 9)
+            os.waitpid(self.pid, 0)
+        os.close(self.fd)
