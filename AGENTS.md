@@ -29,8 +29,12 @@ constructors; there is no global state:
 ## Commands
 - `uv sync` — install dependencies.
 - `uv run main.py` — run the agent (the only entrypoint).
-- `uv run pytest` — run the tests in `tests/` (a few seconds; no network access,
-  API key or `.env` needed).
+- `uv run pytest` — run the offline tests in `tests/` (a few seconds; no network
+  access, API key or `.env` needed).
+- `uv run pytest -m live` — run `tests/test_live.py` against the real model in
+  `.env` (about a minute, real API calls). Settings exported in the shell
+  override `.env`, e.g. `OPENAI_BASE_URL=https://api.openai.com/v1
+  OPENAI_MODEL=gpt-5.4-mini uv run pytest -m live`.
 - Requires Python 3.14+; run through `uv` so the pinned interpreter is used.
 - `uv run ruff check` and `uv run ruff format` — lint and format; both must be
   clean. Rules are in `pyproject.toml`; `E501` is ignored, so long strings and
@@ -66,6 +70,11 @@ constructors; there is no global state:
   streaming scripted replies. It is the only test of real signal delivery; the
   loop tests raise `KeyboardInterrupt` by hand. The child must be forked before
   the server thread starts (see the `terminal` fixture). POSIX only.
+- Live tests (`-m live`, deselected by default) use the `.env` settings with a
+  temporary workspace and assert on effects (files, tool calls, recalled
+  facts), not wording. `SHELL_SETTINGS` captures the shell's settings before
+  the autouse fixture clears them. `conftest.py` sorts live tests last because
+  their real clients start threads that would break the pty tests' fork.
 - `run_command` tests need a POSIX shell and are skipped elsewhere; the timeout
   tests take one second each because the timeout is a whole number of seconds.
 

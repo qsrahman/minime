@@ -31,7 +31,7 @@ class EditFileArguments(ToolArguments):
 
 
 class ReadFileTool(Tool[ReadFileArguments]):
-    """Read a file, optionally limited to an inclusive line range. Long files are returned in parts: to read the next part, pass next_start_line as start_line and, when it is not null, next_offset as offset."""
+    """Read a file, optionally limited to an inclusive line range. When the file continues past the returned lines (because of end_line or the output limit), next_start_line is set: pass it as start_line to read on."""
 
     name = "read_file"
     arguments_model = ReadFileArguments

@@ -39,6 +39,12 @@ ENV_VARS = (
 )
 
 
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Run live tests last. Their real API clients start system threads that
+    outlive them, which would make the pseudo-terminal tests' fork unsafe."""
+    items.sort(key=lambda item: item.get_closest_marker("live") is not None)
+
+
 @pytest.fixture(autouse=True)
 def settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> config.Config:
     """Give every test its own settings and workspace, isolated from .env and the shell.

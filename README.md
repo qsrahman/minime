@@ -77,6 +77,12 @@ uv run pytest
 
 They need no API key or network access: model responses are scripted and web pages are served from a local test server.
 
+End-to-end tests against the real model in your `.env` are kept separate, because they make real API calls:
+
+```sh
+uv run pytest -m live
+```
+
 Lint and format with [ruff](https://docs.astral.sh/ruff/):
 
 ```sh
