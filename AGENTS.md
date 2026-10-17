@@ -1,22 +1,30 @@
 # AGENTS.md
 
 ## Project
-MiniMe is a small interactive coding agent in five flat modules (no package),
+MiniMe is a small interactive coding agent in eight flat modules (no package),
 written as a handful of classes that get their dependencies through their
 constructors; there is no global state:
 - `config.py` — `Config`. `main()` builds it once, reporting invalid settings
   and exiting, and passes it down.
-- `tools.py` — `Workspace` (path checking), `Tool` (abstract base) with one
-  subclass per tool, and `Toolbox` (`for_config()` builds the standard set,
-  `schemas()`, `execute()`). The byte-bounding and HTML helpers stay plain
-  functions. Imports `config` for the `Config` type only.
-- `agent.py` — the system prompt, `Conversation` (history, token ratio,
-  trimming) and `Agent` (the tool loop; prints nothing, reports through
-  `on_text` / `on_notice` callbacks and raises `TurnError`). Imports `config`
-  and `tools`.
-- `repl.py` — `Repl`, all terminal input and output. Imports `agent`.
-- `main.py` — the entry point: loads `Config` and runs `Repl(Agent(config))`.
-  Nothing imports `main`.
+- `tools.py` — what every tool shares: `MAX_TOOL_OUTPUT_BYTES`, `Workspace`
+  (path checking), `ToolArguments`, the abstract `Tool` base class and
+  `Toolbox` (`schemas()`, `execute()`). Imports nothing from the project.
+- `fs.py` — `read_file`, `write_file` and `edit_file` (a `Tool` subclass and
+  an arguments model each).
+- `shell.py` — `run_command`, with the plain helper functions that capture,
+  clip and kill command output and processes.
+- `web.py` — `web_fetch` and `web_search`, with the HTML-to-text and download
+  helpers and their limits.
+- `context.py` — `Context`: the history and the learned tokens per byte, with
+  every change to the history (adding prompts, steps and summaries, trimming,
+  restoring, reset), plus `json_bytes`.
+- `agent.py` — the system prompt, `TurnError`, `Usage` and `Agent` (the tool
+  loop; prints nothing, reports through `on_text` / `on_notice` callbacks and
+  raises `TurnError`), plus `build_toolbox(config)`, which assembles the
+  standard tools. Imports `config`, `context` and the tool modules.
+- `main.py` — `Repl` (all terminal input and output) and the entry point
+  `main()`, which loads `Config`, reporting invalid settings, and runs
+  `Repl(Agent(config))`. Nothing imports `main` except the tests.
 
 ## Commands
 - `uv sync` — install dependencies.
@@ -39,7 +47,7 @@ constructors; there is no global state:
   False), `site` (a local HTTP server with per-test routes), `api` (see below),
   `tool_call` (a tool call for `Toolbox.execute`), and `kinds` (a
   one-label-per-item summary of `history` or of a request's input).
-- Patch a name in the module that looks it up: `"agent.system_prompt"`,
+- Patch a name in the module that looks it up: `"agent.SYSTEM_PROMPT"`,
   `"agent.date"` and `"agent.OpenAI"` for the agent, `main.Config` for the
   entry point.
 - Build agents in tests with `api.agent()`, never `main.Agent(settings)`: an
@@ -62,9 +70,11 @@ constructors; there is no global state:
   tests take one second each because the timeout is a whole number of seconds.
 
 ## Conventions and gotchas
-- Adding a tool (all in `tools.py`): write a `ToolArguments` subclass for its
-  parameters and a `Tool` subclass with `name`, `arguments_model` and
-  `run(args)`, then add it in `Toolbox.for_config`. The schema is generated
+- Adding a tool: in `fs.py`, `shell.py`, `web.py` or a new module beside them,
+  write a `ToolArguments` subclass for its parameters and a `Tool` subclass
+  with `name`, `arguments_model` and `run(args)`, then add it in
+  `agent.build_toolbox`. Tool modules import only from `tools`, never from
+  each other or from `agent`, which keeps imports one-way. The schema is generated
   from the arguments model and the subclass docstring is the description sent
   to the model. `run` raises on bad input; `Toolbox.execute` turns any
   exception into `{"ok": False, "message": ...}`.
@@ -81,8 +91,11 @@ constructors; there is no global state:
   `config.py`. `Workspace.resolve` restricts the file tools and
   `run_command`'s `cwd` to it, but `run_command` itself runs with
   `shell=True` and is not sandboxed.
-- `system_prompt` is plain text; `Agent.instructions()` appends an Environment
+- `SYSTEM_PROMPT` is plain text; `Agent.instructions()` appends an Environment
   section (workspace root, OS, date), and `run_turn` rebuilds it every turn.
+- `read_file` opens files in text mode, so a CRLF file is shown with plain
+  `\n`. `edit_file` matches exactly first and, only if that fails on a CRLF
+  file, converts `old_content` / `new_content` to CRLF; keep the two in step.
 - Tool results are capped at `MAX_TOOL_OUTPUT_BYTES`, each in its own way:
   `read_file` stops at a line boundary and returns `next_start_line` (plus
   `next_offset` when a single over-long line is returned in pieces);
@@ -92,7 +105,7 @@ constructors; there is no global state:
 - Tool results go into `history` as plain JSON (`ensure_ascii=False`, no
   wrapper object), so non-ASCII output is not inflated by escaping.
 - The web tools use `httpx2` (the client `openai` depends on; plain `httpx` is
-  not installed). `Toolbox.for_config` leaves `web_search` out when
+  not installed). `build_toolbox` leaves `web_search` out when
   `BRAVE_API_KEY` is unset.
 - `WebFetchTool` keeps the last page it downloaded; only continuation calls
   (a non-empty `offset` for the same URL) reuse it, so a first part is always
@@ -104,9 +117,9 @@ constructors; there is no global state:
 - The response loop calls `client.responses.stream(..., store=False)` (or
   `.create` when `STREAMING=false`) and appends outputs to in-memory
   `history`; iterations are capped by `MAX_TURNS_PER_RUN`.
-- `Conversation` (in `agent.py`) holds `history` and `tokens_per_byte`, and all
+- `Context` (in `context.py`) holds `history` and `tokens_per_byte`, and all
   history changes go through it (`add_prompt`, `add_step`,
-  `discard_unanswered`, `trim`, `clear`). The token limit is enforced in bytes:
+  `discard_unanswered`, `trim`, `reset`). The token limit is enforced in bytes:
   `Agent.run_turn` converts `max_history_tokens`
   to a byte budget with that ratio (minus the instructions and tool schemas,
   which are sent every time) and re-learns the ratio from each response's
@@ -117,7 +130,7 @@ constructors; there is no global state:
   returns that automatically when `store=False` (checked 2026-10-13 on
   gpt-5.4-mini, gpt-5-mini and o4-mini); no `include` parameter is needed. Do
   not strip or rebuild output items before appending them to `history`.
-- `Conversation.trim(max_bytes)` does nothing until `history` exceeds the
+- `Context.trim(max_bytes)` does nothing until `history` exceeds the
   budget, then cuts it back to `TRIM_TARGET` (75%) of it: whole older turns
   first, then the current turn's oldest tool outputs (replaced with
   a placeholder). The request itself is dropped only if it alone
@@ -130,7 +143,7 @@ constructors; there is no global state:
   - Any change near the start of the prompt (a trim, an edited earlier item)
     is a full miss, which is why trimming cuts to 75% instead of to the limit
     (cache hits over a 14-turn run at the limit went from 24% to 53%).
-  - `system_prompt` plus the tool schemas come to about 830 tokens, under the
+  - `SYSTEM_PROMPT` plus the tool schemas come to about 830 tokens, under the
     minimum, so they are not cached on their own; caching starts once the
     conversation takes the request past 1,024 tokens. Keep that part static
     and keep per-session values in the Environment section, which
@@ -143,15 +156,16 @@ constructors; there is no global state:
 - `[thinking…]` is printed when a stream adds a reasoning item, so it only
   appears in streaming mode. `reasoning` is sent only when `REASONING_EFFORT`
   is set.
-- When `Conversation.trim` drops whole turns, `run_turn` calls
-  `Agent._summarize` (unless `SUMMARIZE=false`), which inserts the result as a
-  leading user message starting with "[Summary of the earlier conversation…]"
-  (so a later trim folds it into the next summary). The summary request
-  reuses the normal instructions, tools and reasoning setting with
-  `tool_choice="none"` to stay on the cached prefix. A failed request falls
-  back to dropping; Ctrl-C during it puts the dropped turns back; a summary
-  that is empty or would not fit is not inserted.
-- `Conversation.add_step` records a model response and all of its tool outputs
+- When `Context.trim` drops whole turns, `run_turn` calls
+  `Agent._summarize` (unless `SUMMARIZE=false`). It only makes the request,
+  reusing the normal instructions, tools and reasoning setting with
+  `tool_choice="none"` to stay on the cached prefix. The history side is
+  `Context`'s: `add_summary` inserts the result as a leading user message
+  starting with "[Summary of the earlier conversation…]" (so a later trim
+  folds it into the next summary) unless it is empty or would not fit, and
+  `restore` puts the dropped turns back after Ctrl-C. A failed request falls
+  back to dropping. Nothing outside `Context` changes `history` directly.
+- `Context.add_step` records a model response and all of its tool outputs
   together, so history never holds a tool call without an output. On Ctrl-C or
   an API error, completed steps stay, tool calls that did not finish get
   an "Interrupted by the user." result, and a prompt with no completed step is removed;

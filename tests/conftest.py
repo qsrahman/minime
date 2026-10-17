@@ -12,7 +12,8 @@ from openai.types.responses import ResponseFunctionToolCall
 
 import config
 import tools
-from agent import Agent, Conversation
+from agent import Agent, build_toolbox
+from context import Context
 
 # Texts the agent puts into history, checked by the tests.
 OMITTED_TOOL_OUTPUT = (
@@ -90,7 +91,7 @@ class Tools:
     @property
     def toolbox(self) -> tools.Toolbox:
         if self._toolbox is None:
-            self._toolbox = tools.Toolbox.for_config(self.settings)
+            self._toolbox = build_toolbox(self.settings)
         return self._toolbox
 
     def __getattr__(self, name: str) -> Callable[..., dict[str, Any]]:
@@ -360,7 +361,7 @@ class Api:
             http_client=httpx2.Client(transport=httpx2.MockTransport(self.handle)),
         )
 
-    def agent(self, conversation: Conversation | None = None) -> Agent:
+    def agent(self, conversation: Context | None = None) -> Agent:
         """An Agent for the test's settings that talks to this endpoint.
 
         Tests always build agents this way: an Agent left to make its own
@@ -369,7 +370,7 @@ class Api:
         """
         agent = Agent(self.settings, client=self.client)
         if conversation is not None:
-            agent.conversation = conversation
+            agent.context = conversation
         return agent
 
     def handle(self, request: httpx2.Request) -> httpx2.Response:

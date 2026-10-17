@@ -26,9 +26,10 @@ from conftest import (
 
 import config
 import main
-import tools
-from agent import SUMMARY_REQUEST, Agent, Conversation, json_bytes, system_prompt
-from repl import Repl
+import shell
+from agent import SUMMARY_REQUEST, SYSTEM_PROMPT, Agent, build_toolbox
+from context import Context, json_bytes
+from main import Repl
 
 
 def write(call_id: str, path: str = "out.txt") -> dict[str, Any]:
@@ -49,26 +50,26 @@ def run(
     api: Api,
     history: list[Any] | None = None,
     prompt: str = "new",
-    conversation: Conversation | None = None,
-) -> Conversation:
+    conversation: Context | None = None,
+) -> Context:
     """One turn as the terminal runs it: text and notices are printed, problems
     are reported rather than raised, and a blank line follows."""
-    agent = api.agent(conversation or Conversation(history=history or []))
+    agent = api.agent(conversation or Context(history=history or []))
     Repl(agent).ask(prompt)
-    return agent.conversation
+    return agent.context
 
 
 def turn(
     api: Api,
     history: list[Any] | None = None,
     prompt: str = "new",
-    conversation: Conversation | None = None,
-) -> Conversation:
+    conversation: Context | None = None,
+) -> Context:
     """One turn through Agent.run_turn itself, so problems are raised."""
-    agent = api.agent(conversation or Conversation(history=history or []))
+    agent = api.agent(conversation or Context(history=history or []))
     repl = Repl(agent)
     agent.run_turn(prompt, on_text=repl.write, on_notice=repl.notice)
-    return agent.conversation
+    return agent.context
 
 
 def old_history() -> list[Any]:
@@ -107,7 +108,7 @@ class TestRequests:
         assert body.get("stream", False) is streaming
         assert body["input"] == [{"role": "user", "content": "hi"}]
         assert [tool["name"] for tool in body["tools"]] == list(
-            tools.Toolbox.for_config(settings).tools
+            build_toolbox(settings).tools
         )
         assert all(tool["strict"] is True for tool in body["tools"])
         assert "reasoning" not in body
@@ -116,7 +117,7 @@ class TestRequests:
         api.replies = [response_body(write("a")), answer()]
         run(api)
         first, second = (body["instructions"] for body in api.requests)
-        assert first.startswith(system_prompt)
+        assert first.startswith(SYSTEM_PROMPT)
         assert second == first
 
     @pytest.mark.parametrize("effort", ["low", "high"])
@@ -362,10 +363,10 @@ class TestInterruptsAndErrors:
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        def interrupted(self: tools.RunCommandTool, args: Any) -> dict[str, Any]:
+        def interrupted(self: shell.RunCommandTool, args: Any) -> dict[str, Any]:
             raise KeyboardInterrupt
 
-        monkeypatch.setattr(tools.RunCommandTool, "run", interrupted)
+        monkeypatch.setattr(shell.RunCommandTool, "run", interrupted)
         sleep = call_item("run_command", "b", cmd="sleep 60", timeout=None, cwd=None)
         api.replies = [response_body(write("a"), sleep, write("c")), answer("never")]
         conversation = run(api, old_history())
@@ -408,7 +409,7 @@ class TestInterruptsAndErrors:
         self, api: Api, streaming: bool, status: int, error: type[Exception]
     ) -> None:
         api.replies = [httpx2.Response(status, json={"error": {"message": "nope"}})]
-        conversation = Conversation(history=old_history())
+        conversation = Context(history=old_history())
         with pytest.raises(error, match="nope"):
             turn(api, conversation=conversation)
         assert kinds(conversation.history) == ["user:old"]
@@ -418,7 +419,7 @@ class TestInterruptsAndErrors:
             response_body(write("a")),
             httpx2.Response(500, json={"error": {"message": "boom"}}),
         ]
-        conversation = Conversation(history=old_history())
+        conversation = Context(history=old_history())
         with pytest.raises(openai.InternalServerError, match="boom"):
             turn(api, conversation=conversation)
         assert kinds(conversation.history) == [
@@ -516,7 +517,7 @@ class TestTokenBudget:
         assert "[Context: 100 of" in capsys.readouterr().out
 
     def test_default_ratio_is_four_bytes_per_token(self) -> None:
-        assert Conversation().tokens_per_byte == 0.25
+        assert Context().tokens_per_byte == 0.25
 
     def test_ratio_is_learned_from_reported_usage(
         self, api: Api, streaming: bool, settings: config.Config
@@ -564,7 +565,7 @@ class TestTokenBudget:
         )
 
     def test_many_turns_are_kept_while_they_fit(self, api: Api) -> None:
-        conversation = Conversation()
+        conversation = Context()
         for number in range(20):
             api.replies = [answer(f"answer {number}")]
             run(api, prompt=f"turn {number}", conversation=conversation)
@@ -622,7 +623,7 @@ class TestTokenBudget:
         def second_request_output(tokens_per_byte: float) -> str:
             api.requests.clear()
             api.replies = [response_body(read("r", "big.txt")), answer()]
-            run(api, conversation=Conversation(tokens_per_byte=tokens_per_byte))
+            run(api, conversation=Context(tokens_per_byte=tokens_per_byte))
             return api.requests[1]["input"][2]["output"]
 
         assert second_request_output(0.25) != OMITTED_TOOL_OUTPUT
@@ -646,7 +647,7 @@ class TestTokenBudget:
         assert kinds(api.requests[2]["input"]) == ["user:old", "user:new"]
 
         # ...until a 3000-byte longer system prompt takes that room back.
-        monkeypatch.setattr("agent.system_prompt", system_prompt + "i" * 3000)
+        monkeypatch.setattr("agent.SYSTEM_PROMPT", SYSTEM_PROMPT + "i" * 3000)
         api.replies = [answer(""), answer()]
         run(api, old_history())
         assert kinds(api.requests[4]["input"]) == ["user:new"]
@@ -897,13 +898,13 @@ class TestThinking:
 def test_system_prompt_has_no_stray_escape_characters() -> None:
     """A lone backslash in the prompt source (such as "\\frac" written as "\frac")
     turns into a control character instead of the text that was meant."""
-    assert [c for c in system_prompt if ord(c) < 32 and c != "\n"] == []
+    assert [c for c in SYSTEM_PROMPT if ord(c) < 32 and c != "\n"] == []
 
 
 class TestInstructions:
     def test_environment_is_described(self, settings: config.Config) -> None:
         instructions = Api(settings).agent().instructions()
-        assert instructions.startswith(system_prompt)
+        assert instructions.startswith(SYSTEM_PROMPT)
         assert f"- Workspace root: {settings.workspace_root}" in instructions
         assert f"- Current date: {date.today().isoformat()}" in instructions
         assert "- Operating system: " in instructions
@@ -913,7 +914,7 @@ class TestInstructions:
         self, settings: config.Config, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(
-            "agent.system_prompt", 'Reply with JSON like {"ok": true}.\n'
+            "agent.SYSTEM_PROMPT", 'Reply with JSON like {"ok": true}.\n'
         )
         assert (
             Api(settings)
@@ -967,11 +968,11 @@ class TestRepl:
         def fake_run_turn(agent: Agent, prompt: str, **callbacks: Any) -> None:
             state["prompts"].append(prompt)
             state["agents"].append(agent)
-            agent.conversation.history.append({"role": "user", "content": prompt})
+            agent.context.history.append({"role": "user", "content": prompt})
             if prompt == "explode":
                 raise RuntimeError("boom")
             if prompt == "learn":
-                agent.conversation.tokens_per_byte = 0.5
+                agent.context.tokens_per_byte = 0.5
 
         monkeypatch.setattr("builtins.input", fake_input)
         monkeypatch.setattr(main, "Config", lambda: settings)
@@ -1024,16 +1025,20 @@ class TestRepl:
         assert repl["prompts"] == ["first", "second"]
         agent = repl["agents"][0]
         assert agent.client == "client"
-        assert list(agent.toolbox.tools) == list(
-            tools.Toolbox.for_config(agent.config).tools
-        )
+        assert list(agent.toolbox.tools) == list(build_toolbox(agent.config).tools)
+
+    @pytest.mark.parametrize("blank", ["   ", "\t", " \t "])
+    def test_blank_prompts_are_not_sent(self, repl: dict[str, Any], blank: str) -> None:
+        repl["inputs"] = [blank, "real", "exit"]
+        main.main()
+        assert repl["prompts"] == ["real"]
 
     def test_one_agent_serves_every_turn(self, repl: dict[str, Any]) -> None:
         repl["inputs"] = ["a", "b", "exit"]
         main.main()
         first, second = repl["agents"]
         assert first is second
-        assert kinds(first.conversation.history) == ["user:a", "user:b"]
+        assert kinds(first.context.history) == ["user:a", "user:b"]
 
     def test_errors_are_reported_and_the_loop_continues(
         self, repl: dict[str, Any], capsys: pytest.CaptureFixture[str]
@@ -1054,13 +1059,13 @@ class TestRepl:
         main.main()
         # /clear itself is not sent to the model.
         assert repl["prompts"] == ["one", "two", "three"]
-        assert kinds(repl["agents"][0].conversation.history) == ["user:three"]
+        assert kinds(repl["agents"][0].context.history) == ["user:three"]
         assert "[Conversation cleared]" in capsys.readouterr().out
 
     def test_clear_keeps_the_learned_token_ratio(self, repl: dict[str, Any]) -> None:
         repl["inputs"] = ["learn", "/clear", "exit"]
         main.main()
-        assert repl["agents"][0].conversation.tokens_per_byte == 0.5
+        assert repl["agents"][0].context.tokens_per_byte == 0.5
 
 
 class TestNotices:

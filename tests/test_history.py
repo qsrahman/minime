@@ -1,9 +1,10 @@
 import json
 from typing import Any
 
+import pytest
 from conftest import OMITTED_TOOL_OUTPUT
 
-from agent import TRIM_TARGET, Conversation, json_bytes
+from context import TRIM_TARGET, Context, json_bytes
 
 NO_LIMIT = 10**9
 PLACEHOLDER = (
@@ -35,19 +36,19 @@ def sizes(history: list[Any]) -> list[Any]:
 def test_history_within_limits_is_untouched() -> None:
     history = [user("one"), output("a", 100), user("two")]
     before = json.dumps(history)
-    assert Conversation(history).trim(NO_LIMIT) == (False, False)
+    assert Context(history).trim(NO_LIMIT) == (False, False)
     assert json.dumps(history) == before
 
 
 def test_empty_history() -> None:
     history: list[Any] = []
-    assert Conversation(history).trim(NO_LIMIT) == (False, False)
+    assert Context(history).trim(NO_LIMIT) == (False, False)
     assert history == []
 
 
 def test_oldest_turns_are_dropped_by_size() -> None:
     history = [user("one"), output("a", 4000), user("two"), output("b", 4000)]
-    assert Conversation(history).trim(6000) == (True, False)
+    assert Context(history).trim(6000) == (True, False)
     assert sizes(history) == ["two", 4000]
 
 
@@ -60,7 +61,7 @@ def test_several_turns_can_be_dropped_at_once() -> None:
         user("three"),
         output("c", 10),
     ]
-    assert Conversation(history).trim(500) == (True, False)
+    assert Context(history).trim(500) == (True, False)
     assert sizes(history) == ["three", 10]
 
 
@@ -69,7 +70,7 @@ def test_trimming_cuts_back_to_three_quarters_of_the_limit() -> None:
     and every trim discards the provider's prompt cache."""
     history = [item for n in range(10) for item in (user(f"t{n}"), output("o", 900))]
     limit = json_bytes(history) - 1  # one byte over
-    assert Conversation(history).trim(limit) == (True, False)
+    assert Context(history).trim(limit) == (True, False)
 
     assert json_bytes(history) <= limit * TRIM_TARGET
     assert sizes(history)[0] == "t3"  # three turns dropped, not one
@@ -82,36 +83,36 @@ def test_history_between_the_mark_and_the_limit_is_left_alone() -> None:
     history = [user("one"), output("a", 4000), user("two"), output("b", 4000)]
     size = json_bytes(history)
     assert size > (size + 100) * TRIM_TARGET
-    assert Conversation(history).trim(size + 100) == (False, False)
+    assert Context(history).trim(size + 100) == (False, False)
     assert sizes(history) == ["one", 4000, "two", 4000]
 
 
 def test_room_is_left_for_later_requests_after_a_trim() -> None:
     history = [item for n in range(10) for item in (user(f"t{n}"), output("o", 900))]
     limit = json_bytes(history) - 1
-    Conversation(history).trim(limit)
+    Context(history).trim(limit)
     # Two more turns can be appended before anything is trimmed again.
     for n in (10, 11):
         history += [user(f"t{n}"), output("o", 900)]
-        assert Conversation(history).trim(limit) == (False, False)
+        assert Context(history).trim(limit) == (False, False)
 
 
 def test_items_before_the_first_user_turn_go_with_it() -> None:
     history = [output("orphan", 3000), user("one"), user("two")]
-    Conversation(history).trim(200)
+    Context(history).trim(200)
     assert sizes(history) == ["two"]
 
 
 def test_current_turn_sheds_its_oldest_tool_outputs() -> None:
     history = [user("go"), output("a", 3000), output("b", 3000), output("c", 3000)]
-    assert Conversation(history).trim(8800) == (True, False)
+    assert Context(history).trim(8800) == (True, False)
     assert sizes(history) == ["go", "OMITTED", 3000, 3000]
 
 
 def test_tool_outputs_are_also_cut_back_to_the_mark() -> None:
     history = [user("go"), *(output(f"o{n}", 1000) for n in range(10))]
     limit = json_bytes(history) - 1
-    assert Conversation(history).trim(limit) == (True, False)
+    assert Context(history).trim(limit) == (True, False)
     assert json_bytes(history) <= limit * TRIM_TARGET
     assert sizes(history)[1:4] == ["OMITTED"] * 3
     assert sizes(history)[-1] == 1000
@@ -120,43 +121,43 @@ def test_tool_outputs_are_also_cut_back_to_the_mark() -> None:
 def test_request_above_the_mark_but_within_the_limit_is_kept() -> None:
     """The mark applies to what can be dropped; the request itself only has to fit."""
     history = [user("p" * 4500), output("a", 1000)]
-    assert Conversation(history).trim(5000) == (True, False)
+    assert Context(history).trim(5000) == (True, False)
     assert sizes(history) == ["p" * 4500, "OMITTED"]
 
 
 def test_older_turns_go_before_current_tool_outputs() -> None:
     history = [user("old"), output("a", 4000), user("new"), output("b", 4000)]
-    Conversation(history).trim(6000)
+    Context(history).trim(6000)
     assert sizes(history) == ["new", 4000]
 
 
 def test_all_tool_outputs_can_be_omitted() -> None:
     history = [user("go"), output("a", 3000), output("b", 3000)]
-    assert Conversation(history).trim(600) == (True, False)
+    assert Context(history).trim(600) == (True, False)
     assert sizes(history) == ["go", "OMITTED", "OMITTED"]
 
 
 def test_oversized_request_is_replaced_by_a_placeholder() -> None:
     history = [user("y" * 5000), output("a", 10)]
-    assert Conversation(history).trim(1000) == (True, True)
+    assert Context(history).trim(1000) == (True, True)
     assert history == [user(PLACEHOLDER)]
 
 
 def test_history_is_emptied_when_even_the_placeholder_does_not_fit() -> None:
     history = [user("y" * 5000)]
-    assert Conversation(history).trim(10) == (True, True)
+    assert Context(history).trim(10) == (True, True)
     assert history == []
 
 
 def test_history_without_a_user_turn_cannot_be_trimmed() -> None:
     history = [{"type": "message", "text": "z" * 500}]
-    assert Conversation(history).trim(10) == (False, False)
+    assert Context(history).trim(10) == (False, False)
     assert len(history) == 1
 
 
 def test_size_is_measured_in_utf8_bytes() -> None:
     history = [user("old"), user("é" * 120)]  # 120 characters, 240 bytes
-    assert Conversation(history).trim(300) == (True, False)
+    assert Context(history).trim(300) == (True, False)
     assert sizes(history) == ["é" * 120]
 
 
@@ -166,14 +167,14 @@ def test_non_dict_items_are_counted() -> None:
             return "i" * 5000
 
     history = [user("old"), Item(), user("new")]
-    assert Conversation(history).trim(1000) == (True, False)
+    assert Context(history).trim(1000) == (True, False)
     assert history == [user("new")]
 
 
 def test_trimming_mutates_the_same_list() -> None:
     history = [user("x" * 3000), user("two")]
     alias = history
-    Conversation(history).trim(500)
+    Context(history).trim(500)
     assert alias is history
     assert alias == [user("two")]
 
@@ -181,13 +182,60 @@ def test_trimming_mutates_the_same_list() -> None:
 def test_limit_is_inclusive() -> None:
     history = [user("old"), user("new")]
     size = json_bytes(history)
-    assert Conversation(history).trim(size) == (False, False)
-    assert Conversation(history).trim(size - 1) == (True, False)
+    assert Context(history).trim(size) == (False, False)
+    assert Context(history).trim(size - 1) == (True, False)
     assert history == [user("new")]
 
 
 def test_many_long_turns_are_kept_when_they_fit() -> None:
     """There is no cap on the number of turns, only on their total size."""
     history = [user(f"turn {i}") for i in range(200)]
-    assert Conversation(history).trim(NO_LIMIT) == (False, False)
+    assert Context(history).trim(NO_LIMIT) == (False, False)
     assert len(history) == 200
+
+
+MARKER = "[Summary of the earlier conversation, which was removed to save space]"
+
+
+def test_summary_goes_first_with_its_marker() -> None:
+    context = Context([user("now")])
+    context.add_summary("  Earlier: the user asked for X.\n", NO_LIMIT)
+    assert context.history == [
+        user(f"{MARKER}\nEarlier: the user asked for X."),
+        user("now"),
+    ]
+
+
+@pytest.mark.parametrize("text", ["", "   ", "\n\t"])
+def test_empty_summary_is_left_out(text: str) -> None:
+    context = Context([user("now")])
+    context.add_summary(text, NO_LIMIT)
+    assert context.history == [user("now")]
+
+
+def test_summary_that_would_not_fit_is_left_out() -> None:
+    context = Context([user("now")])
+    room = json_bytes([user(f"{MARKER}\nshort"), user("now")])
+    context.add_summary("short", room)
+    assert len(context.history) == 2
+    context = Context([user("now")])
+    context.add_summary("short", room - 1)
+    assert context.history == [user("now")]
+
+
+def test_summary_is_trimmed_like_any_turn() -> None:
+    context = Context([user("now")])
+    context.add_summary("s" * 3000, NO_LIMIT)
+    context.history.append(user("next"))
+    assert context.trim(500) == (True, False)
+    assert context.history == [user("now"), user("next")]
+
+
+def test_restore_puts_dropped_turns_back_in_order() -> None:
+    history = [user("one"), output("a", 3000), user("two"), user("three")]
+    context = Context(list(history))
+    context.trim(500)
+    assert context.history == [user("two"), user("three")]
+
+    context.restore(history[:2])
+    assert context.history == history

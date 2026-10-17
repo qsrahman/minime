@@ -7,26 +7,28 @@ from conftest import Site, Tools
 
 import config
 import tools
+import web
+from agent import build_toolbox
 
 LIMIT = tools.MAX_TOOL_OUTPUT_BYTES
 
 
 def text_of(markup: str, base_url: str = "") -> str:
-    return tools.html_to_text(markup, base_url)[1]
+    return web.html_to_text(markup, base_url)[1]
 
 
 class TestHtmlToText:
     def test_title_is_returned_separately(self) -> None:
-        title, text = tools.html_to_text(
+        title, text = web.html_to_text(
             "<html><head><title> My &amp; Page </title></head><body><p>Body</p></body>"
         )
         assert (title, text) == ("My & Page", "Body")
 
     def test_no_title(self) -> None:
-        assert tools.html_to_text("<p>Body</p>") == ("", "Body")
+        assert web.html_to_text("<p>Body</p>") == ("", "Body")
 
     def test_only_the_first_title_counts(self) -> None:
-        title, text = tools.html_to_text(
+        title, text = web.html_to_text(
             "<title>First</title><body><title>Second</title><p>Body</p>"
         )
         assert title == "First"
@@ -55,7 +57,7 @@ class TestHtmlToText:
         assert text_of("<nav>a<nav>b</nav>still hidden</nav><p>shown</p>") == "shown"
 
     def test_title_inside_svg_is_ignored(self) -> None:
-        title, text = tools.html_to_text("<svg><title>Icon</title></svg><p>Body</p>")
+        title, text = web.html_to_text("<svg><title>Icon</title></svg><p>Body</p>")
         assert (title, text) == ("", "Body")
 
     @pytest.mark.parametrize(
@@ -147,13 +149,13 @@ class TestHtmlToText:
         assert text_of('<nav><a href="/x">Home</a></nav><p>Body</p>') == "Body"
 
     def test_plain_text_fragment(self) -> None:
-        assert tools.html_to_text("just <strong>text</strong> &amp; more") == (
+        assert web.html_to_text("just <strong>text</strong> &amp; more") == (
             "",
             "just text & more",
         )
 
     def test_empty_document(self) -> None:
-        assert tools.html_to_text("") == ("", "")
+        assert web.html_to_text("") == ("", "")
 
     def test_unclosed_tags(self) -> None:
         assert text_of("<p>one<p>two<li>three") == "one\ntwo\nthree"
@@ -195,7 +197,7 @@ class TestWebFetch:
         assert seen["method"] == "GET"
         assert seen["headers"] == {"User-Agent": "minime/0.1"}
         assert seen["follow_redirects"] is True
-        assert seen["timeout"] == tools.WEB_TIMEOUT_SECONDS
+        assert seen["timeout"] == web.WEB_TIMEOUT_SECONDS
 
     @pytest.mark.parametrize(
         ("content_type", "body"),
@@ -333,7 +335,7 @@ class TestWebFetch:
     def test_download_is_capped_and_reported(
         self, tool: Tools, site: Site, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(tools, "MAX_FETCH_BYTES", 1000)
+        monkeypatch.setattr(web, "MAX_FETCH_BYTES", 1000)
         result = tool.web_fetch(site.add("/big", "x" * 5000, "text/plain"))
         assert result["total_chars"] == 1000
         assert result["truncated"] is True
@@ -341,7 +343,7 @@ class TestWebFetch:
     def test_download_at_the_cap_is_not_reported_as_truncated(
         self, tool: Tools, site: Site, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(tools, "MAX_FETCH_BYTES", 1000)
+        monkeypatch.setattr(web, "MAX_FETCH_BYTES", 1000)
         result = tool.web_fetch(site.add("/exact", "x" * 1000, "text/plain"))
         assert (result["total_chars"], result["truncated"]) == (1000, False)
 
@@ -354,7 +356,7 @@ class TestWebFetch:
                 wfile.flush()
                 time.sleep(0.05)
 
-        monkeypatch.setattr(tools, "WEB_TIMEOUT_SECONDS", 0.3)
+        monkeypatch.setattr(web, "WEB_TIMEOUT_SECONDS", 0.3)
         started = time.monotonic()
         with pytest.raises(TimeoutError, match="download took longer"):
             tool.web_fetch(site.add("/drip", drip, "text/plain"))
@@ -405,9 +407,9 @@ class TestWebSearch:
         monkeypatch.setattr(
             httpx2, "get", lambda *a, **k: pytest.fail("no request expected")
         )
-        assert "web_search" not in tools.Toolbox.for_config(settings).tools
+        assert "web_search" not in build_toolbox(settings).tools
         settings.brave_api_key = "brave-key"
-        assert "web_search" in tools.Toolbox.for_config(settings).tools
+        assert "web_search" in build_toolbox(settings).tools
 
     def test_request(self, tool: Tools, brave: dict[str, Any]) -> None:
         tool.web_search("uv sync site:astral.sh")
@@ -419,7 +421,7 @@ class TestWebSearch:
                     "X-Subscription-Token": "brave-key",
                     "Accept": "application/json",
                 },
-                "timeout": tools.WEB_TIMEOUT_SECONDS,
+                "timeout": web.WEB_TIMEOUT_SECONDS,
             }
         ]
 

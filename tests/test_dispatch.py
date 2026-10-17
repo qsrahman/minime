@@ -7,7 +7,9 @@ import pytest
 from conftest import raw_tool_call, tool_call
 
 import config
+import fs
 import tools
+from agent import build_toolbox
 
 ALL_TOOLS = [
     "read_file",
@@ -20,7 +22,7 @@ ALL_TOOLS = [
 
 
 def toolbox_for(settings: config.Config) -> tools.Toolbox:
-    return tools.Toolbox.for_config(settings)
+    return build_toolbox(settings)
 
 
 @pytest.fixture
@@ -91,7 +93,7 @@ class TestToolSchemas:
         )
 
     def test_optional_arguments_are_nullable(self) -> None:
-        properties = tools.ReadFileArguments.model_json_schema()["properties"]
+        properties = fs.ReadFileArguments.model_json_schema()["properties"]
         assert {"type": "null"} in properties["start_line"]["anyOf"]
         assert {"type": "integer"} in properties["start_line"]["anyOf"]
 

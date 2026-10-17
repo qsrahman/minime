@@ -8,6 +8,7 @@ import pytest
 from conftest import Tools
 
 import config
+import shell
 import tools
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="uses POSIX shell commands")
@@ -28,11 +29,11 @@ def process_is_gone(pid: int, wait_seconds: float = 3.0) -> bool:
 
 
 def capture(data: bytes) -> tuple[bytes, bytes, int]:
-    return tools.read_bounded_output(io.BytesIO(data))
+    return shell.read_bounded_output(io.BytesIO(data))
 
 
 def render(data: bytes, budget: int = LIMIT) -> str:
-    return tools.render_output(*capture(data), budget)
+    return shell.render_output(*capture(data), budget)
 
 
 def omitted_count(output: str) -> int:
@@ -262,7 +263,7 @@ class TestRunCommand:
             raise KeyboardInterrupt
 
         # The shell exits at once; Ctrl-C then arrives while output is still being read.
-        monkeypatch.setattr(tools, "wait", interrupted)
+        monkeypatch.setattr(shell, "wait", interrupted)
         with pytest.raises(KeyboardInterrupt):
             tool.run_command("sleep 30 & echo $! > child.pid", timeout=10)
         assert process_is_gone(int((workspace / "child.pid").read_text()))

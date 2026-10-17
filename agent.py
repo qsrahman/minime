@@ -1,29 +1,24 @@
-import json
 import platform
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date
-from typing import Any, cast
+from typing import Any
 
 from openai import Omit, OpenAI, OpenAIError, omit
 from openai.types.responses import (
-    EasyInputMessageParam,
     Response,
     ResponseFunctionToolCall,
     ResponseInputParam,
 )
-from openai.types.responses.tool_param import ToolParam
 from openai.types.shared_params import Reasoning
 
 from config import Config
-from tools import Toolbox
+from context import Context, json_bytes
+from fs import EditFileTool, ReadFileTool, WriteFileTool
+from shell import RunCommandTool
+from tools import Tool, Toolbox, Workspace
+from web import WebFetchTool, WebSearchTool
 
-# Used until the model reports real token counts: about four bytes per token.
-DEFAULT_TOKENS_PER_BYTE = 0.25
-# Once history passes the limit it is cut back to this share of it, not just to
-# the limit. Each cut changes the start of the prompt, which discards the
-# provider's prompt cache; cutting further leaves many requests before the next.
-TRIM_TARGET = 0.75
 SUMMARY_REQUEST = (
     "The conversation above is about to be removed to save space. Write a summary "
     "of it for your own later use: what the user asked for, what was done and "
@@ -31,7 +26,7 @@ SUMMARY_REQUEST = (
     "unfinished. Be specific, use at most 300 words, and do not call tools."
 )
 
-system_prompt = """
+SYSTEM_PROMPT = """
 You are an expert AI coding agent.
 
 Operating rules:
@@ -49,120 +44,19 @@ Operating rules:
 """
 
 
-def json_bytes(value: object) -> int:
-    return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
-
-
-@dataclass
-class Conversation:
-    """The message history and how many tokens the model counts per byte of it.
-
-    Every function_call is followed by its function_call_output, because the
-    API rejects history otherwise; add_step records them together.
-    """
-
-    history: ResponseInputParam = field(default_factory=list)
-    tokens_per_byte: float = DEFAULT_TOKENS_PER_BYTE
-
-    def clear(self) -> None:
-        """Forget the history; the learned tokens per byte still apply."""
-        self.history.clear()
-
-    def add_prompt(self, prompt: str) -> EasyInputMessageParam:
-        """Start a turn with the user's message, which is returned."""
-        message: EasyInputMessageParam = {"role": "user", "content": prompt}
-        self.history.append(message)
-        return message
-
-    def add_step(
-        self,
-        output: Sequence[Any],
-        tool_calls: Sequence[ResponseFunctionToolCall],
-        results: Sequence[dict[str, Any]],
-    ) -> None:
-        """Record a response's output items and one output per tool call.
-
-        Calls without a result, because Ctrl-C interrupted them, are recorded
-        as interrupted.
-        """
-        interrupted = {"ok": False, "message": "Interrupted by the user."}
-        missing = len(tool_calls) - len(results)
-        self.history.extend(cast(ResponseInputParam, output))
-        self.history.extend(
-            {
-                "type": "function_call_output",
-                "call_id": call.call_id,
-                "output": json.dumps(result, ensure_ascii=False),
-            }
-            for call, result in zip(
-                tool_calls,
-                [*results, *[interrupted] * missing],
-                strict=True,
-            )
-        )
-
-    def discard_unanswered(self, prompt: EasyInputMessageParam) -> None:
-        """Drop the turn's prompt if no step was recorded after it."""
-        if self.history and self.history[-1] is prompt:
-            self.history.pop()
-
-    def trim(self, max_bytes: int) -> tuple[bool, bool]:
-        """Trim the history in place to fit max_bytes.
-
-        Returns whether anything was trimmed and whether the current request
-        itself had to be dropped.
-        """
-        history = self.history
-        if json_bytes(history) <= max_bytes:
-            return False, False
-
-        trimmed = False
-        target_bytes = int(max_bytes * TRIM_TARGET)
-        omitted = (
-            "[Tool output omitted to fit the context budget; "
-            "call the tool again if it is still needed.]"
-        )
-        while json_bytes(history) > target_bytes:
-            user_turn_starts = [
-                index
-                for index, item in enumerate(history)
-                if isinstance(item, dict) and item.get("role") == "user"
-            ]
-            if len(user_turn_starts) > 1:
-                del history[: user_turn_starts[1]]
-                trimmed = True
-                continue
-
-            # Only the current request is left: free space by omitting its oldest
-            # tool outputs.
-            oldest_output = next(
-                (
-                    item
-                    for item in history
-                    if isinstance(item, dict)
-                    and item.get("type") == "function_call_output"
-                    and item.get("output") != omitted
-                ),
-                None,
-            )
-            if oldest_output is None:
-                break  # nothing left that can be dropped
-            cast(dict[str, Any], oldest_output)["output"] = omitted
-            trimmed = True
-
-        # The request itself is over the limit: give up on it.
-        if json_bytes(history) > max_bytes and any(
-            isinstance(item, dict) and item.get("role") == "user" for item in history
-        ):
-            replacement: ResponseInputParam = [
-                {
-                    "role": "user",
-                    "content": "[Previous request omitted because its history exceeded the context budget.]",
-                }
-            ]
-            history[:] = replacement if json_bytes(replacement) <= max_bytes else []
-            return True, True
-        return trimmed, False
+def build_toolbox(config: Config) -> Toolbox:
+    """The standard tools; web_search only when there is a key for it."""
+    workspace = Workspace(config.workspace_root)
+    tools: list[Tool[Any]] = [
+        ReadFileTool(workspace),
+        WriteFileTool(workspace),
+        EditFileTool(workspace),
+        RunCommandTool(workspace, config.command_timeout),
+        WebFetchTool(),
+    ]
+    if config.brave_api_key:
+        tools.append(WebSearchTool(config.brave_api_key))
+    return Toolbox(tools)
 
 
 class TurnError(Exception):
@@ -187,15 +81,21 @@ class Agent:
             api_key=config.api_key,
             base_url=config.base_url,
         )
-        self.conversation = Conversation()
-        self.toolbox = Toolbox.for_config(config)
+        self.context = Context()
+        self.toolbox = build_toolbox(config)
+        # Fixed for the agent's life, so built once.
+        self.tool_schemas = self.toolbox.schemas()
+        # Left out unless configured, so endpoints without reasoning are unaffected.
+        self.reasoning: Reasoning | Omit = (
+            {"effort": config.reasoning_effort} if config.reasoning_effort else omit
+        )
         self.usage = Usage()
 
     def instructions(self) -> str:
         """The system prompt plus details of the environment, which are kept
         last so the start of the prompt stays the same for the provider's cache."""
         return (
-            f"{system_prompt}\n"
+            f"{SYSTEM_PROMPT}\n"
             "Environment:\n"
             f"- Workspace root: {self.config.workspace_root}\n"
             f"- Operating system: {platform.platform()}\n"
@@ -221,43 +121,33 @@ class Agent:
                 history stays valid.
         """
         config = self.config
-        conversation = self.conversation
+        context = self.context
         # Built per turn so the date stays right in a long-running session.
         instructions = self.instructions()
-        tool_schemas = self.toolbox.schemas()
         # Instructions and tool schemas go out with every request, so they count
         # against the token limit as well.
-        overhead_bytes = len(instructions.encode("utf-8")) + json_bytes(tool_schemas)
-        # Left out unless configured, so endpoints without reasoning are unaffected.
-        reasoning: Reasoning | Omit = (
-            {"effort": config.reasoning_effort} if config.reasoning_effort else omit
+        overhead_bytes = len(instructions.encode("utf-8")) + json_bytes(
+            self.tool_schemas
         )
         self.usage = Usage()
-        prompt_message = conversation.add_prompt(prompt)
+        prompt_message = context.add_prompt(prompt)
 
         try:
             for _ in range(config.max_turns):
                 max_bytes = (
-                    int(config.max_history_tokens / conversation.tokens_per_byte)
+                    int(config.max_history_tokens / context.tokens_per_byte)
                     - overhead_bytes
                 )
-                before = list(conversation.history)
-                trimmed, current_turn_dropped = conversation.trim(max_bytes)
+                before = list(context.history)
+                trimmed, current_turn_dropped = context.trim(max_bytes)
                 # Whole turns are only ever removed from the front.
                 dropped = (
                     []
                     if current_turn_dropped
-                    else before[: len(before) - len(conversation.history)]
+                    else before[: len(before) - len(context.history)]
                 )
                 if dropped and config.summarize:
-                    self._summarize(
-                        dropped,
-                        max_bytes,
-                        instructions,
-                        tool_schemas,
-                        reasoning,
-                        on_notice,
-                    )
+                    self._summarize(dropped, max_bytes, instructions, on_notice)
                 elif trimmed:
                     on_notice(
                         "Conversation history trimmed to fit "
@@ -268,10 +158,8 @@ class Agent:
                         "Turn stopped because its history exceeded the context budget"
                     )
 
-                request_bytes = overhead_bytes + json_bytes(conversation.history)
-                response = self._create_response(
-                    instructions, tool_schemas, reasoning, on_text, on_notice
-                )
+                request_bytes = overhead_bytes + json_bytes(context.history)
+                response = self._create_response(instructions, on_text, on_notice)
                 self._record_usage(response, request_bytes)
                 self._check_status(response)
 
@@ -286,19 +174,17 @@ class Agent:
                         results.append(self.toolbox.execute(call))
                 finally:
                     # Record the step even when Ctrl-C interrupts a tool.
-                    conversation.add_step(response.output, tool_calls, results)
+                    context.add_step(response.output, tool_calls, results)
 
                 if not tool_calls:
                     return
             raise TurnError(f"Turn limit reached ({config.max_turns})")
         finally:
-            conversation.discard_unanswered(prompt_message)
+            context.discard_unanswered(prompt_message)
 
     def _create_response(
         self,
         instructions: str,
-        tool_schemas: list[ToolParam],
-        reasoning: Reasoning | Omit,
         on_text: Callable[[str], None],
         on_notice: Callable[[str], None],
     ) -> Response:
@@ -307,9 +193,9 @@ class Agent:
             response = self.client.responses.create(
                 model=self.config.model,
                 instructions=instructions,
-                input=self.conversation.history,
-                tools=tool_schemas,
-                reasoning=reasoning,
+                input=self.context.history,
+                tools=self.tool_schemas,
+                reasoning=self.reasoning,
                 store=False,
             )
             if response.output_text:
@@ -319,9 +205,9 @@ class Agent:
         with self.client.responses.stream(
             model=self.config.model,
             instructions=instructions,
-            input=self.conversation.history,
-            tools=tool_schemas,
-            reasoning=reasoning,
+            input=self.context.history,
+            tools=self.tool_schemas,
+            reasoning=self.reasoning,
             store=False,
         ) as stream:
             unfinished = None
@@ -358,7 +244,7 @@ class Agent:
             self.usage.cached_tokens = details.cached_tokens if details else 0
             # Learn this model's tokens per byte from what it just counted; the
             # bounds guard against an endpoint reporting nonsense.
-            self.conversation.tokens_per_byte = min(
+            self.context.tokens_per_byte = min(
                 1.0, max(0.1, usage.input_tokens / request_bytes)
             )
 
@@ -378,12 +264,9 @@ class Agent:
         dropped: ResponseInputParam,
         max_bytes: int,
         instructions: str,
-        tool_schemas: list[ToolParam],
-        reasoning: Reasoning | Omit,
         on_notice: Callable[[str], None],
     ) -> None:
-        """Put a model-written summary of the dropped turns at the start of history."""
-        history = self.conversation.history
+        """Ask the model to summarise the dropped turns and put the summary in their place."""
         on_notice("Summarising earlier conversation to save space…")
         try:
             # The same instructions, tools and reasoning setting as every other
@@ -393,13 +276,13 @@ class Agent:
                 model=self.config.model,
                 instructions=instructions,
                 input=[*dropped, {"role": "user", "content": SUMMARY_REQUEST}],
-                tools=tool_schemas,
+                tools=self.tool_schemas,
                 tool_choice="none",
-                reasoning=reasoning,
+                reasoning=self.reasoning,
                 store=False,
             )
         except KeyboardInterrupt:
-            history[:0] = dropped
+            self.context.restore(dropped)
             raise
         except OpenAIError as exc:
             on_notice(f"No summary ({type(exc).__name__}); it was dropped instead")
@@ -407,11 +290,4 @@ class Agent:
 
         if reply.usage:
             self.usage.output_tokens += reply.usage.output_tokens
-        summary = reply.output_text.strip()
-        summary_message: EasyInputMessageParam = {
-            "role": "user",
-            "content": "[Summary of the earlier conversation, which was removed "
-            f"to save space]\n{summary}",
-        }
-        if summary and json_bytes([summary_message, *history]) <= max_bytes:
-            history.insert(0, summary_message)
+        self.context.add_summary(reply.output_text, max_bytes)

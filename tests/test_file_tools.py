@@ -335,7 +335,6 @@ class TestEditFile:
         [
             ("def f():\n    return 1\n", "def f():\n  return 1"),  # indentation
             ("def f():\n\treturn 1\n", "def f():\n    return 1"),  # tabs vs spaces
-            (b"a = 1\r\nb = 2\r\n", "a = 1\nb = 2"),  # line endings
             ("x = [1,  2]\n", "x = [1, 2]"),  # spacing
             ("one\n\ntwo\n", "one\ntwo"),  # blank line
         ],
@@ -393,6 +392,50 @@ class TestEditFile:
         (workspace / "f.py").write_text("def f():\n    return 1\n")
         tool.edit_file("f.py", "def f():\n    return 1", "def f():\n    return 2")
         assert (workspace / "f.py").read_text() == "def f():\n    return 2\n"
+
+    def test_text_copied_from_read_file_edits_a_crlf_file(
+        self, tool: Tools, workspace: Path
+    ) -> None:
+        path = workspace / "crlf.py"
+        path.write_bytes(b"def f():\r\n    return 1\r\n\r\nprint(f())\r\n")
+        shown = tool.read_file("crlf.py")["content"]
+        assert "\r" not in shown  # read_file shows plain newlines
+
+        old = "def f():\n    return 1\n"
+        assert old in shown
+        result = tool.edit_file("crlf.py", old, "def f():\n    return 2\n")
+        assert result["ok"] is True
+        # The new text takes the file's own line endings.
+        assert path.read_bytes() == b"def f():\r\n    return 2\r\n\r\nprint(f())\r\n"
+
+    def test_crlf_text_still_matches_exactly(
+        self, tool: Tools, workspace: Path
+    ) -> None:
+        path = workspace / "crlf.txt"
+        path.write_bytes(b"a\r\nb\r\n")
+        tool.edit_file("crlf.txt", "a\r\nb", "a\r\nc")
+        assert path.read_bytes() == b"a\r\nc\r\n"
+
+    def test_new_text_with_crlf_is_not_doubled(
+        self, tool: Tools, workspace: Path
+    ) -> None:
+        path = workspace / "crlf.txt"
+        path.write_bytes(b"one\r\ntwo\r\n")
+        tool.edit_file("crlf.txt", "one\ntwo\n", "uno\r\ndos\r\n")
+        assert path.read_bytes() == b"uno\r\ndos\r\n"
+
+    def test_lf_file_is_not_converted(self, tool: Tools, workspace: Path) -> None:
+        path = workspace / "lf.txt"
+        path.write_bytes(b"a\nb\n")
+        tool.edit_file("lf.txt", "a\nb", "a\nc")
+        assert path.read_bytes() == b"a\nc\n"
+
+    def test_crlf_file_with_absent_text_still_fails(
+        self, tool: Tools, workspace: Path
+    ) -> None:
+        (workspace / "crlf.txt").write_bytes(b"a\r\nb\r\n")
+        with pytest.raises(ValueError, match="old_content not found"):
+            tool.edit_file("crlf.txt", "x\ny", "z")
 
     def test_line_endings_are_preserved(self, tool: Tools, workspace: Path) -> None:
         (workspace / "crlf.txt").write_bytes(b"a\r\nb\r\n")
