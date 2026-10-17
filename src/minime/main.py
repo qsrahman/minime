@@ -26,22 +26,22 @@ class Repl:
         print(
             f"AI coding agent started | model: {config.model} | "
             f"workspace: {config.workspace_root}\n"
-            "Type 'exit' or 'quit' to stop, '/clear' to start a new conversation.\n"
+            "Type '/exit' or '/quit' to stop, '/reset' to start a new conversation.\n"
         )
 
         while True:
             try:
-                prompt = input("> ")
+                prompt = input("> ").strip()
             except KeyboardInterrupt, EOFError:
                 break
 
-            if not prompt.strip():
+            if not prompt:
                 continue
 
-            command = prompt.strip().lower()
-            if command in {"exit", "quit"}:
+            command = prompt.lower()
+            if command in {"/exit", "/quit"}:
                 break
-            if command == "/clear":
+            if command == "/reset":
                 self.agent.context.reset()
                 print("[Conversation cleared]\n")
                 continue

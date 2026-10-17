@@ -200,6 +200,6 @@ def test_exit_after_an_interrupted_request(
     terminal.expect(r"one two")
     terminal.type(CTRL_C)
     terminal.expect(PROMPT_AGAIN)
-    terminal.type("exit")
+    terminal.type("/exit")
     terminal.expect(r"Goodbye!")
     assert terminal.wait_for_exit() == 0

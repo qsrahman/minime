@@ -84,7 +84,7 @@ constructors; there is no global state:
   the autouse fixture clears them. `conftest.py` sorts live tests last because
   their real clients start threads that would break the pty tests' fork.
 - `tests/test_live_repl.py` (live) types at the real `minime` on a
-  pseudo-terminal against the `.env` model: commands, memory and `/clear`,
+  pseudo-terminal against the `.env` model: commands, memory and `/reset`,
   Ctrl-C while an answer streams, while a command runs and while the model
   thinks, a double Ctrl-C, and quitting. The shared `Terminal` helper is in
   `conftest.py`; pseudo-terminal tests carry the `pty` marker and are sorted
@@ -153,7 +153,7 @@ constructors; there is no global state:
   `Agent.run_turn` converts `max_history_tokens`
   to a byte budget with that ratio (minus the instructions and tool schemas,
   which are sent every time) and re-learns the ratio from each response's
-  `usage.input_tokens`, bounded to 0.1-1.0. `/clear` empties `history` and
+  `usage.input_tokens`, bounded to 0.1-1.0. `/reset` empties `history` and
   keeps the ratio.
 - `store=False` means the API keeps nothing, so reasoning items in
   `response.output` must be replayed with their `encrypted_content`. The API

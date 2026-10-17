@@ -442,7 +442,7 @@ class TestInterruptsAndErrors:
             httpx2.Response(500, json={"error": {"message": "server down"}}),
             answer("Recovered."),
         ]
-        inputs = iter(["first", "second", "exit"])
+        inputs = iter(["first", "second", "/exit"])
         monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
         monkeypatch.setattr(main, "Config", lambda: api.settings)
         monkeypatch.setattr("minime.agent.OpenAI", lambda **kwargs: api.client)
@@ -991,18 +991,18 @@ class TestRepl:
     ) -> None:
         settings.model = "banner-model"
         settings.base_url = "http://localhost:9/v1"
-        repl["inputs"] = ["exit"]
+        repl["inputs"] = ["/exit"]
         main.main()
         out = capsys.readouterr().out
         assert f"model: banner-model | workspace: {settings.workspace_root}" in out
-        assert "'/clear' to start a new conversation" in out
+        assert "'/reset' to start a new conversation" in out
         assert out.endswith("\nGoodbye!\n")
         assert repl["client_kwargs"] == {
             "api_key": "test-key",
             "base_url": "http://localhost:9/v1",
         }
 
-    @pytest.mark.parametrize("word", ["exit", "quit", "EXIT", "  Quit  "])
+    @pytest.mark.parametrize("word", ["/exit", "/quit", "/EXIT", "  /Quit  "])
     def test_exit_words(self, repl: dict[str, Any], word: str) -> None:
         repl["inputs"] = [word, "never read"]
         main.main()
@@ -1023,7 +1023,7 @@ class TestRepl:
     def test_prompts_are_passed_on_and_blank_lines_skipped(
         self, repl: dict[str, Any]
     ) -> None:
-        repl["inputs"] = ["first", "", "second", "exit"]
+        repl["inputs"] = ["first", "", "second", "/exit"]
         main.main()
         assert repl["prompts"] == ["first", "second"]
         agent = repl["agents"][0]
@@ -1032,12 +1032,12 @@ class TestRepl:
 
     @pytest.mark.parametrize("blank", ["   ", "\t", " \t "])
     def test_blank_prompts_are_not_sent(self, repl: dict[str, Any], blank: str) -> None:
-        repl["inputs"] = [blank, "real", "exit"]
+        repl["inputs"] = [blank, "real", "/exit"]
         main.main()
         assert repl["prompts"] == ["real"]
 
     def test_one_agent_serves_every_turn(self, repl: dict[str, Any]) -> None:
-        repl["inputs"] = ["a", "b", "exit"]
+        repl["inputs"] = ["a", "b", "/exit"]
         main.main()
         first, second = repl["agents"]
         assert first is second
@@ -1046,27 +1046,27 @@ class TestRepl:
     def test_errors_are_reported_and_the_loop_continues(
         self, repl: dict[str, Any], capsys: pytest.CaptureFixture[str]
     ) -> None:
-        repl["inputs"] = ["explode", "after", "exit"]
+        repl["inputs"] = ["explode", "after", "/exit"]
         main.main()
         assert repl["prompts"] == ["explode", "after"]
         assert "[Agent error: RuntimeError: boom]" in capsys.readouterr().out
 
-    @pytest.mark.parametrize("command", ["/clear", "/CLEAR", "  /clear  "])
-    def test_clear_empties_the_history_and_keeps_going(
+    @pytest.mark.parametrize("command", ["/reset", "/RESET", "  /reset  "])
+    def test_reset_empties_the_history_and_keeps_going(
         self,
         repl: dict[str, Any],
         capsys: pytest.CaptureFixture[str],
         command: str,
     ) -> None:
-        repl["inputs"] = ["one", "two", command, "three", "exit"]
+        repl["inputs"] = ["one", "two", command, "three", "/exit"]
         main.main()
-        # /clear itself is not sent to the model.
+        # /reset itself is not sent to the model.
         assert repl["prompts"] == ["one", "two", "three"]
         assert kinds(repl["agents"][0].context.history) == ["user:three"]
         assert "[Conversation cleared]" in capsys.readouterr().out
 
-    def test_clear_keeps_the_learned_token_ratio(self, repl: dict[str, Any]) -> None:
-        repl["inputs"] = ["learn", "/clear", "exit"]
+    def test_reset_keeps_the_learned_token_ratio(self, repl: dict[str, Any]) -> None:
+        repl["inputs"] = ["learn", "/reset", "/exit"]
         main.main()
         assert repl["agents"][0].context.tokens_per_byte == 0.5
 

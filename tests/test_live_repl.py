@@ -70,16 +70,16 @@ def test_banner_turn_commands_and_exit(start: Callable[..., Terminal]) -> None:
     terminal.expect(PROMPT)
     assert "Context" not in terminal.screen
 
-    terminal.type("/clear")
+    terminal.type("/reset")
     terminal.expect(r"\[Conversation cleared\][\s\S]*" + PROMPT)
 
-    terminal.type("exit")
+    terminal.type("/exit")
     terminal.expect(r"Goodbye!")
     assert terminal.wait_for_exit() == 0
     assert "AI coding agent started" in first_screen
 
 
-def test_memory_and_clear(start: Callable[..., Terminal]) -> None:
+def test_memory_and_reset(start: Callable[..., Terminal]) -> None:
     terminal = start()
     answer(terminal, "Remember this: my cat is called Biscuit. Just acknowledge it.")
     assert (
@@ -87,7 +87,7 @@ def test_memory_and_clear(start: Callable[..., Terminal]) -> None:
         in answer(terminal, "What is my cat called? Answer with the name only.").lower()
     )
 
-    terminal.type("/clear")
+    terminal.type("/reset")
     terminal.expect(r"\[Conversation cleared\][\s\S]*" + PROMPT)
     screen = answer(
         terminal,

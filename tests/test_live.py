@@ -252,7 +252,7 @@ def test_the_program_end_to_end(tmp_path: Path) -> None:
     (tmp_path / "note.txt").write_text("marker-7431\n")
     result = subprocess.run(
         [sys.executable, "-m", "minime.main"],
-        input="Read note.txt and reply with its contents only.\n/clear\nexit\n",
+        input="Read note.txt and reply with its contents only.\n/reset\n/exit\n",
         capture_output=True,
         text=True,
         cwd=tmp_path,
