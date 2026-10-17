@@ -18,7 +18,7 @@ constructors; there is no global state:
 - `context.py` — `Context`: the history and the learned tokens per byte, with
   every change to the history (adding prompts, steps and summaries, trimming,
   restoring, reset), plus `json_bytes`.
-- `agent.py` — the system prompt, `TurnError`, `Usage` and `Agent` (the tool
+- `agent.py` — the system prompt, `TurnError` and `Agent` (the tool
   loop; prints nothing, reports through `on_text` / `on_notice` callbacks and
   raises `TurnError`), plus `build_toolbox(config)`, which assembles the
   standard tools. Imports `config`, `context` and the tool modules.
@@ -110,7 +110,7 @@ constructors; there is no global state:
 - Tool schemas use OpenAI `strict: True`, so every argument field must be
   required: declare optional ones as `X | None` with no default.
 - Config uses `pydantic-settings` `validation_alias`, so field names differ from
-  env vars: `OPENAI_MODEL`→`model`, `MAX_TURNS_PER_RUN`→`max_turns`,
+  env vars: `OPENAI_MODEL`→`model`, `MAX_STEPS_PER_TURN`→`max_steps`,
   `COMMAND_TIMEOUT_SECONDS`→`command_timeout`, `STREAMING`→`streaming`,
   `REASONING_EFFORT`→`reasoning_effort`, `SUMMARIZE`→`summarize`,
   `MAX_HISTORY_TOKENS`→`max_history_tokens`, `WORKSPACE_ROOT`→`workspace_root`,
@@ -151,7 +151,7 @@ constructors; there is no global state:
   writes links as `[text](absolute-url)`.
 - The response loop calls `client.responses.stream(..., store=False)` (or
   `.create` when `STREAMING=false`) and appends outputs to in-memory
-  `history`; iterations are capped by `MAX_TURNS_PER_RUN`.
+  `history`; iterations are capped by `MAX_STEPS_PER_TURN`.
 - `Context` (in `context.py`) holds `history` and `tokens_per_byte`, and all
   history changes go through it (`add_prompt`, `add_step`,
   `discard_unanswered`, `trim`, `reset`). The token limit is enforced in bytes:
@@ -212,8 +212,6 @@ constructors; there is no global state:
   rare on slow streams but frequent on fast ones (5 of 8 live runs on
   gpt-5.4-mini failed `test_ctrl_c_while_an_answer_streams`); each press is
   an independent chance, so pressing it again normally stops the answer.
-- `Agent.usage` holds the token counts of the last turn; `Repl.ask` prints the
-  `[Context: …]` line from it after reporting any error.
 - `.env` is gitignored but present locally, overriding the model and base URL to a
   local OpenAI-compatible endpoint. It is read by `Config` only and is not
   exported to `os.environ`. Do not print or commit secrets.

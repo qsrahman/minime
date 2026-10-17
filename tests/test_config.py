@@ -17,7 +17,7 @@ def test_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     settings = make(OPENAI_API_KEY="k")
     assert settings.model == "gpt-5.4-mini"
     assert settings.base_url is None
-    assert settings.max_turns == 16
+    assert settings.max_steps == 16
     assert settings.command_timeout == 30
     assert settings.reasoning_effort is None
     assert settings.summarize is True
@@ -34,7 +34,7 @@ def test_environment_variables_map_to_fields(
         "OPENAI_API_KEY": "env-key",
         "OPENAI_MODEL": "some-model",
         "OPENAI_BASE_URL": "http://localhost:1234/v1",
-        "MAX_TURNS_PER_RUN": "3",
+        "MAX_STEPS_PER_TURN": "3",
         "COMMAND_TIMEOUT_SECONDS": "7",
         "REASONING_EFFORT": "medium",
         "SUMMARIZE": "false",
@@ -50,7 +50,7 @@ def test_environment_variables_map_to_fields(
     assert settings.api_key == "env-key"
     assert settings.model == "some-model"
     assert settings.base_url == "http://localhost:1234/v1"
-    assert settings.max_turns == 3
+    assert settings.max_steps == 3
     assert settings.command_timeout == 7
     assert settings.reasoning_effort == "medium"
     assert settings.summarize is False
@@ -72,8 +72,8 @@ def test_unknown_environment_variables_are_ignored(
     [
         ("OPENAI_API_KEY", ""),
         ("OPENAI_MODEL", ""),
-        ("MAX_TURNS_PER_RUN", "0"),
-        ("MAX_TURNS_PER_RUN", "many"),
+        ("MAX_STEPS_PER_TURN", "0"),
+        ("MAX_STEPS_PER_TURN", "many"),
         ("COMMAND_TIMEOUT_SECONDS", "-1"),
         ("REASONING_EFFORT", "extreme"),
         ("REASONING_EFFORT", ""),
@@ -152,7 +152,7 @@ def test_missing_workspace_is_reported_at_startup(
 def test_main_reports_configuration_errors_and_exits(
     env_file: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    env_file.write_text("MAX_TURNS_PER_RUN=0\n")
+    env_file.write_text("MAX_STEPS_PER_TURN=0\n")
     with pytest.raises(SystemExit) as exit_info:
         main.main()
     assert exit_info.value.code == 1
@@ -160,4 +160,4 @@ def test_main_reports_configuration_errors_and_exits(
     assert captured.out == ""
     assert "Configuration error:" in captured.err
     assert "OPENAI_API_KEY" in captured.err
-    assert "MAX_TURNS_PER_RUN" in captured.err
+    assert "MAX_STEPS_PER_TURN" in captured.err

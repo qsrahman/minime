@@ -61,7 +61,6 @@ class Turn:
         start = len(agent.context.history)
         agent.run_turn(prompt, on_text=self._text, on_notice=self.notices.append)
         self.items = agent.context.history[start:]
-        self.usage = agent.usage
 
     def _text(self, text: str) -> None:
         self.text += text
@@ -84,8 +83,7 @@ def test_plain_answer(make_agent: Callable[..., Agent], streaming: bool) -> None
     turn = Turn(agent, "Reply with exactly the word: pineapple")
     assert turn.says("pineapple")
     assert turn.tools_called == []
-    assert turn.usage.context_tokens > 0
-    assert turn.usage.output_tokens > 0
+    assert agent.context.tokens_per_byte != 0.25  # learned from the reported usage
 
 
 def test_read_file(make_agent: Callable[..., Agent], tmp_path: Path) -> None:
@@ -227,13 +225,13 @@ def _limit_for(agent: Agent, history_tokens: int) -> int:
     return fixed // 4 + history_tokens
 
 
-def test_turn_limit_is_reported(
+def test_step_limit_is_reported(
     make_agent: Callable[..., Agent], tmp_path: Path
 ) -> None:
     for n in range(5):
         (tmp_path / f"f{n}.txt").write_text(f"{n}\n")
-    agent = make_agent(MAX_TURNS_PER_RUN=1)
-    with pytest.raises(TurnError, match="Turn limit reached"):
+    agent = make_agent(MAX_STEPS_PER_TURN=1)
+    with pytest.raises(TurnError, match="Step limit reached"):
         Turn(agent, "Use read_file on f0.txt, then on f1.txt, then tell me both.")
     # The step that ran is kept, with its outputs.
     kinds = [
@@ -261,7 +259,7 @@ def test_the_program_end_to_end(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert "marker-7431" in result.stdout
-    assert "[Context: " in result.stdout
+    assert "[Context: " not in result.stdout
     assert "[History reset]" in result.stdout
     assert result.stdout.rstrip().endswith("Goodbye!")
 

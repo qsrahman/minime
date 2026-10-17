@@ -1,6 +1,5 @@
 import platform
 from collections.abc import Callable
-from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
@@ -63,15 +62,6 @@ class TurnError(Exception):
     """A turn that ended without a final answer; completed steps stay in the history."""
 
 
-@dataclass
-class Usage:
-    """Token counts for a turn, as the model reported them."""
-
-    context_tokens: int = 0  # input tokens of the turn's last request
-    cached_tokens: int = 0  # the part of context_tokens the provider had cached
-    output_tokens: int = 0  # summed over every request in the turn
-
-
 class Agent:
     """Runs the tool loop for each user turn. Prints nothing itself."""
 
@@ -89,7 +79,6 @@ class Agent:
         self.reasoning: Reasoning | Omit = (
             {"effort": config.reasoning_effort} if config.reasoning_effort else omit
         )
-        self.usage = Usage()
 
     def instructions(self) -> str:
         """The system prompt plus details of the environment, which are kept
@@ -129,11 +118,10 @@ class Agent:
         overhead_bytes = len(instructions.encode("utf-8")) + json_bytes(
             self.tool_schemas
         )
-        self.usage = Usage()
         prompt_message = context.add_prompt(prompt)
 
         try:
-            for _ in range(config.max_turns):
+            for _ in range(config.max_steps):
                 max_bytes = (
                     int(config.max_history_tokens / context.tokens_per_byte)
                     - overhead_bytes
@@ -151,7 +139,7 @@ class Agent:
                 elif trimmed:
                     on_notice(
                         "Conversation history trimmed to fit "
-                        f"{config.max_history_tokens} tokens"
+                        f"{config.max_history_tokens:,} tokens"
                     )
                 if current_turn_dropped:
                     raise TurnError(
@@ -160,7 +148,7 @@ class Agent:
 
                 request_bytes = overhead_bytes + json_bytes(context.history)
                 response = self._create_response(instructions, on_text, on_notice)
-                self._record_usage(response, request_bytes)
+                self._learn_tokens_per_byte(response, request_bytes)
                 self._check_status(response)
 
                 tool_calls = [
@@ -178,7 +166,7 @@ class Agent:
 
                 if not tool_calls:
                     return
-            raise TurnError(f"Turn limit reached ({config.max_turns})")
+            raise TurnError(f"Step limit reached ({config.max_steps})")
         finally:
             context.discard_unanswered(prompt_message)
 
@@ -189,27 +177,21 @@ class Agent:
         on_notice: Callable[[str], None],
     ) -> Response:
         """Request one model response, passing its text to on_text."""
+        request: dict[str, Any] = {
+            "model": self.config.model,
+            "instructions": instructions,
+            "input": self.context.history,
+            "tools": self.tool_schemas,
+            "reasoning": self.reasoning,
+            "store": False,
+        }
         if not self.config.streaming:
-            response = self.client.responses.create(
-                model=self.config.model,
-                instructions=instructions,
-                input=self.context.history,
-                tools=self.tool_schemas,
-                reasoning=self.reasoning,
-                store=False,
-            )
+            response = self.client.responses.create(**request)
             if response.output_text:
                 on_text(response.output_text + "\n")
             return response
 
-        with self.client.responses.stream(
-            model=self.config.model,
-            instructions=instructions,
-            input=self.context.history,
-            tools=self.tool_schemas,
-            reasoning=self.reasoning,
-            store=False,
-        ) as stream:
+        with self.client.responses.stream(**request) as stream:
             unfinished = None
             for event in stream:
                 if event.type == "response.output_text.delta":
@@ -230,22 +212,16 @@ class Agent:
             on_text("\n")
         return response
 
-    def _record_usage(self, response: Response, request_bytes: int) -> None:
-        """Add the response's token counts to the turn's, and learn from them."""
-        usage = response.usage
-        if not usage:
-            return
-        self.usage.output_tokens += usage.output_tokens
-        if usage.input_tokens:
-            self.usage.context_tokens = usage.input_tokens
-            # Cached tokens are part of input_tokens: they cost less but still
-            # fill the context window, so the limit counts them.
-            details = usage.input_tokens_details
-            self.usage.cached_tokens = details.cached_tokens if details else 0
-            # Learn this model's tokens per byte from what it just counted; the
-            # bounds guard against an endpoint reporting nonsense.
+    def _learn_tokens_per_byte(self, response: Response, request_bytes: int) -> None:
+        """Learn this model's tokens per byte from what it just counted.
+
+        Cached tokens are part of input_tokens: they cost less but still fill
+        the context window, so the limit counts them. The bounds guard against
+        an endpoint reporting nonsense.
+        """
+        if response.usage and response.usage.input_tokens:
             self.context.tokens_per_byte = min(
-                1.0, max(0.1, usage.input_tokens / request_bytes)
+                1.0, max(0.1, response.usage.input_tokens / request_bytes)
             )
 
     @staticmethod
@@ -288,6 +264,4 @@ class Agent:
             on_notice(f"No summary ({type(exc).__name__}); it was dropped instead")
             return
 
-        if reply.usage:
-            self.usage.output_tokens += reply.usage.output_tokens
         self.context.add_summary(reply.output_text, max_bytes)

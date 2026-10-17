@@ -72,15 +72,6 @@ class Repl:
             self.notice("Interrupted; returning to prompt")
         except Exception as exc:  # noqa: BLE001
             self.notice(f"Agent error: {type(exc).__name__}: {exc}")
-
-        usage = self.agent.usage
-        if usage.context_tokens:
-            cached = f", {usage.cached_tokens:,} cached" if usage.cached_tokens else ""
-            self.notice(
-                f"Context: {usage.context_tokens:,} of "
-                f"{self.agent.config.max_history_tokens:,} tokens{cached}; "
-                f"output: {usage.output_tokens:,} tokens"
-            )
         print()
 
     def write(self, text: str) -> None:

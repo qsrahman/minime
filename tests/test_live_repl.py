@@ -53,8 +53,8 @@ def start(tmp_path: Path) -> Iterator[Callable[..., Terminal]]:
 
 def answer(terminal: Terminal, prompt: str, timeout: float = 120) -> str:
     """Type a prompt and return everything printed until the next prompt."""
-    terminal.type(prompt)
-    terminal.expect(r"\[Context: [^\]]*\][\s\S]*" + PROMPT, timeout=timeout)
+    terminal.type(prompt)  # clears the screen, so the old prompt cannot match
+    terminal.expect(PROMPT, timeout=timeout)
     return terminal.screen
 
 
@@ -64,7 +64,7 @@ def test_banner_turn_commands_and_exit(start: Callable[..., Terminal]) -> None:
 
     screen = answer(terminal, "Reply with exactly the word: pineapple")
     assert "pineapple" in screen.lower()
-    assert re.search(r"\[Context: [\d,]+ of [\d,]+ tokens", screen)
+    assert "Context" not in screen  # no token counts after a turn
 
     terminal.type("   ")  # a blank line is ignored: no request, just a new prompt
     terminal.expect(PROMPT)

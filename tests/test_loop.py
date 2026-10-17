@@ -300,13 +300,13 @@ class TestToolCalls:
         ]
         assert second["input"][1] == reasoning_item()
 
-    def test_turn_limit(
+    def test_step_limit(
         self,
         api: Api,
         settings: config.Config,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        settings.max_turns = 2
+        settings.max_steps = 2
         api.replies = [
             response_body(write("a")),
             response_body(write("b")),
@@ -322,18 +322,18 @@ class TestToolCalls:
             "call:b",
             "output:b:ok",
         ]
-        assert "[Turn limit reached (2)]" in capsys.readouterr().out
+        assert "[Step limit reached (2)]" in capsys.readouterr().out
 
-    def test_answer_on_the_last_allowed_turn_is_not_a_limit(
+    def test_answer_on_the_last_allowed_step_is_not_a_limit(
         self,
         api: Api,
         settings: config.Config,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        settings.max_turns = 2
+        settings.max_steps = 2
         api.replies = [response_body(write("a")), answer()]
         run(api)
-        assert "Turn limit" not in capsys.readouterr().out
+        assert "Step limit" not in capsys.readouterr().out
 
 
 class TestInterruptsAndErrors:
@@ -457,31 +457,6 @@ class TestInterruptsAndErrors:
 class TestTokenBudget:
     """History is limited in tokens, using the model's own count per byte."""
 
-    def test_usage_is_reported_after_the_turn(
-        self,
-        api: Api,
-        streaming: bool,
-        settings: config.Config,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        settings.max_history_tokens = 64_000
-        api.replies = [answer("ok", input_tokens=12_345)]
-        run(api)
-        assert (
-            capsys.readouterr().out
-            == "\nok\n[Context: 12,345 of 64,000 tokens; output: 7 tokens]\n\n"
-        )
-
-    def test_cached_tokens_are_reported(
-        self, api: Api, streaming: bool, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        api.replies = [answer("ok", input_tokens=5805, cached_tokens=4608)]
-        run(api)
-        assert (
-            capsys.readouterr().out
-            == "\nok\n[Context: 5,805 of 200,000 tokens, 4,608 cached; output: 7 tokens]\n\n"
-        )
-
     def test_cached_tokens_do_not_reduce_the_context_count(
         self, api: Api, settings: config.Config
     ) -> None:
@@ -491,31 +466,12 @@ class TestTokenBudget:
         request_bytes = overhead(settings) + json_bytes(api.requests[0]["input"])
         assert conversation.tokens_per_byte == pytest.approx(2000 / request_bytes)
 
-    def test_the_last_request_of_the_turn_is_the_one_reported(
-        self, api: Api, capsys: pytest.CaptureFixture[str]
+    def test_token_counts_are_not_printed(
+        self, api: Api, streaming: bool, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        api.replies = [
-            response_body(write("a"), input_tokens=100),
-            answer(input_tokens=250),
-        ]
+        api.replies = [answer("ok", input_tokens=5805, cached_tokens=4608)]
         run(api)
-        out = capsys.readouterr().out
-        assert "[Context: 250 of" in out
-        assert "[Context: 100 of" not in out
-
-    def test_nothing_is_reported_without_usage(
-        self, api: Api, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        api.replies = [answer("ok")]
-        run(api)
-        assert "Context" not in capsys.readouterr().out
-
-    def test_usage_is_reported_even_when_interrupted(
-        self, api: Api, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        api.replies = [response_body(write("a"), input_tokens=100), KeyboardInterrupt()]
-        run(api)
-        assert "[Context: 100 of" in capsys.readouterr().out
+        assert capsys.readouterr().out == "\nok\n\n"
 
     def test_default_ratio_is_four_bytes_per_token(self) -> None:
         assert Context().tokens_per_byte == 0.25
@@ -551,19 +507,6 @@ class TestTokenBudget:
         conversation = run(api, history)
         assert kinds(api.requests[1]["input"]) == ["user:new"]
         assert kinds(conversation.history) == ["user:new", "message"]
-
-    def test_output_tokens_are_added_up_over_the_turn(
-        self, api: Api, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        api.replies = [
-            response_body(write("a"), input_tokens=100, output_tokens=40),
-            answer(input_tokens=250, output_tokens=15),
-        ]
-        run(api)
-        assert (
-            "[Context: 250 of 200,000 tokens; output: 55 tokens]"
-            in capsys.readouterr().out
-        )
 
     def test_many_turns_are_kept_while_they_fit(self, api: Api) -> None:
         conversation = Context()
@@ -755,18 +698,6 @@ class TestSummaries:
         assert contents[0] == f"{SUMMARY_MARKER}\nsecond summary"
         assert sum(SUMMARY_MARKER in content for content in contents) == 1
 
-    def test_summary_output_tokens_are_counted(
-        self, api: Api, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        api.replies = [
-            answer("summary", input_tokens=900, output_tokens=120),
-            answer("ok", input_tokens=700, output_tokens=5),
-        ]
-        run(api, [big("a"), big("b")])
-        out = capsys.readouterr().out
-        assert "[Context: 700 of" in out  # the real request, not the summary one
-        assert "output: 125 tokens]" in out
-
     @pytest.mark.parametrize("text", ["", "   \n"])
     def test_empty_summary_is_not_inserted(self, api: Api, text: str) -> None:
         api.replies = [answer(text), answer("ok")]
@@ -811,7 +742,9 @@ class TestSummaries:
         assert kinds(api.requests[0]["input"]) == [f"user:{'b' * 3000}", "user:new"]
         out = capsys.readouterr().out
         assert "Summarising" not in out
-        assert "[Conversation history trimmed to fit" in out
+        limit = settings.max_history_tokens
+        assert limit >= 1000  # so the thousands separator shows
+        assert f"[Conversation history trimmed to fit {limit:,} tokens]" in out
 
     def test_omitting_tool_outputs_needs_no_summary(
         self, api: Api, workspace: Path, capsys: pytest.CaptureFixture[str]

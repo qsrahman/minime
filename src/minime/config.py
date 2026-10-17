@@ -27,10 +27,10 @@ class Config(BaseSettings):
         default=None,
         validation_alias="OPENAI_BASE_URL",
     )
-    max_turns: int = Field(
+    max_steps: int = Field(
         default=16,
         gt=0,
-        validation_alias="MAX_TURNS_PER_RUN",
+        validation_alias="MAX_STEPS_PER_TURN",
     )
     command_timeout: int = Field(
         default=30,
