@@ -126,14 +126,7 @@ class Agent:
                     int(config.max_history_tokens / context.tokens_per_byte)
                     - overhead_bytes
                 )
-                before = list(context.history)
-                trimmed, current_turn_dropped = context.trim(max_bytes)
-                # Whole turns are only ever removed from the front.
-                dropped = (
-                    []
-                    if current_turn_dropped
-                    else before[: len(before) - len(context.history)]
-                )
+                dropped, trimmed, request_dropped = context.trim(max_bytes)
                 if dropped and config.summarize:
                     self._summarize(dropped, max_bytes, instructions, on_notice)
                 elif trimmed:
@@ -141,15 +134,17 @@ class Agent:
                         "Conversation history trimmed to fit "
                         f"{config.max_history_tokens:,} tokens"
                     )
-                if current_turn_dropped:
+                if request_dropped:
                     raise TurnError(
                         "Turn stopped because its history exceeded the context budget"
                     )
 
-                request_bytes = overhead_bytes + json_bytes(context.history)
-                response = self._create_response(instructions, on_text, on_notice)
-                self._learn_tokens_per_byte(response, request_bytes)
-                self._check_status(response)
+                response = self._create_response(
+                    instructions,
+                    overhead_bytes + json_bytes(context.history),
+                    on_text,
+                    on_notice,
+                )
 
                 tool_calls = [
                     item
@@ -170,63 +165,63 @@ class Agent:
         finally:
             context.discard_unanswered(prompt_message)
 
-    def _create_response(
-        self,
-        instructions: str,
-        on_text: Callable[[str], None],
-        on_notice: Callable[[str], None],
-    ) -> Response:
-        """Request one model response, passing its text to on_text."""
-        request: dict[str, Any] = {
+    def _request(self, instructions: str, input: ResponseInputParam) -> dict[str, Any]:
+        """The arguments every request shares, the summary one included, so
+        they all start with the same prefix for the provider's cache."""
+        return {
             "model": self.config.model,
             "instructions": instructions,
-            "input": self.context.history,
+            "input": input,
             "tools": self.tool_schemas,
             "reasoning": self.reasoning,
             "store": False,
         }
-        if not self.config.streaming:
+
+    def _create_response(
+        self,
+        instructions: str,
+        request_bytes: int,
+        on_text: Callable[[str], None],
+        on_notice: Callable[[str], None],
+    ) -> Response:
+        """Request one model response, passing its text to on_text.
+
+        Raises TurnError for a response that stopped early or failed.
+        """
+        request = self._request(instructions, self.context.history)
+        if self.config.streaming:
+            with self.client.responses.stream(**request) as stream:
+                unfinished = None
+                for event in stream:
+                    if event.type == "response.output_text.delta":
+                        on_text(event.delta)
+                    elif (
+                        event.type == "response.output_item.added"
+                        and event.item.type == "reasoning"
+                    ):
+                        on_notice("thinking…")
+                    elif (
+                        event.type == "response.incomplete"
+                        or event.type == "response.failed"
+                    ):
+                        # get_final_response() only knows completed responses.
+                        unfinished = event.response
+                response = unfinished or stream.get_final_response()
+            if response.output_text:
+                on_text("\n")
+        else:
             response = self.client.responses.create(**request)
             if response.output_text:
                 on_text(response.output_text + "\n")
-            return response
 
-        with self.client.responses.stream(**request) as stream:
-            unfinished = None
-            for event in stream:
-                if event.type == "response.output_text.delta":
-                    on_text(event.delta)
-                elif (
-                    event.type == "response.output_item.added"
-                    and event.item.type == "reasoning"
-                ):
-                    on_notice("thinking…")
-                elif (
-                    event.type == "response.incomplete"
-                    or event.type == "response.failed"
-                ):
-                    # get_final_response() only knows completed responses.
-                    unfinished = event.response
-            response = unfinished or stream.get_final_response()
-        if response.output_text:
-            on_text("\n")
-        return response
-
-    def _learn_tokens_per_byte(self, response: Response, request_bytes: int) -> None:
-        """Learn this model's tokens per byte from what it just counted.
-
-        Cached tokens are part of input_tokens: they cost less but still fill
-        the context window, so the limit counts them. The bounds guard against
-        an endpoint reporting nonsense.
-        """
+        # Learn this model's tokens per byte from what it just counted. Cached
+        # tokens are part of input_tokens and still fill the context window, so
+        # the limit counts them; the bounds guard against nonsense reports.
         if response.usage and response.usage.input_tokens:
             self.context.tokens_per_byte = min(
                 1.0, max(0.1, response.usage.input_tokens / request_bytes)
             )
 
-    @staticmethod
-    def _check_status(response: Response) -> None:
-        """Raise TurnError for a response that stopped early or failed."""
         if response.status == "incomplete":
             details = response.incomplete_details
             reason = details.reason if details else "unknown"
@@ -234,6 +229,7 @@ class Agent:
         if response.status == "failed":
             message = response.error.message if response.error else "unknown error"
             raise TurnError(f"Response failed: {message}")
+        return response
 
     def _summarize(
         self,
@@ -249,13 +245,11 @@ class Agent:
             # request: the dropped items were the start of the previous prompt,
             # so the provider has nearly all of this one cached.
             reply = self.client.responses.create(
-                model=self.config.model,
-                instructions=instructions,
-                input=[*dropped, {"role": "user", "content": SUMMARY_REQUEST}],
-                tools=self.tool_schemas,
+                **self._request(
+                    instructions,
+                    [*dropped, {"role": "user", "content": SUMMARY_REQUEST}],
+                ),
                 tool_choice="none",
-                reasoning=self.reasoning,
-                store=False,
             )
         except KeyboardInterrupt:
             self.context.restore(dropped)

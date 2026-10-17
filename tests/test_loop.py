@@ -553,9 +553,7 @@ class TestTokenBudget:
             "[Turn stopped because its history exceeded the context budget]"
             in capsys.readouterr().out
         )
-        assert [item["content"] for item in conversation.history] == [
-            "[Previous request omitted because its history exceeded the context budget.]"
-        ]
+        assert conversation.history == []
 
     def test_token_dense_text_is_trimmed_sooner(
         self, api: Api, settings: config.Config, workspace: Path

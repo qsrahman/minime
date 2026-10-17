@@ -1,6 +1,7 @@
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from itertools import chain, repeat
 from typing import Any, cast
 
 from openai.types.responses import (
@@ -19,6 +20,11 @@ TRIM_TARGET = 0.75
 
 def json_bytes(value: object) -> int:
     return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
+
+
+def is_prompt(item: object) -> bool:
+    """Whether a history item is a user message, which starts a turn."""
+    return isinstance(item, dict) and item.get("role") == "user"
 
 
 @dataclass
@@ -54,7 +60,6 @@ class Context:
         as interrupted.
         """
         interrupted = {"ok": False, "message": "Interrupted by the user."}
-        missing = len(tool_calls) - len(results)
         self.history.extend(cast(ResponseInputParam, output))
         self.history.extend(
             {
@@ -63,9 +68,7 @@ class Context:
                 "output": json.dumps(result, ensure_ascii=False),
             }
             for call, result in zip(
-                tool_calls,
-                [*results, *[interrupted] * missing],
-                strict=True,
+                tool_calls, chain(results, repeat(interrupted)), strict=False
             )
         )
 
@@ -94,16 +97,18 @@ class Context:
         if self.history and self.history[-1] is prompt:
             self.history.pop()
 
-    def trim(self, max_bytes: int) -> tuple[bool, bool]:
+    def trim(self, max_bytes: int) -> tuple[ResponseInputParam, bool, bool]:
         """Trim the history in place to fit max_bytes.
 
-        Returns whether anything was trimmed and whether the current request
-        itself had to be dropped.
+        Returns the whole turns dropped from the front (oldest first), whether
+        anything was trimmed, and whether the current request itself had to be
+        dropped, in which case the history is emptied and no turns are returned.
         """
         history = self.history
         if json_bytes(history) <= max_bytes:
-            return False, False
+            return [], False, False
 
+        dropped: ResponseInputParam = []
         trimmed = False
         target_bytes = int(max_bytes * TRIM_TARGET)
         omitted = (
@@ -112,11 +117,10 @@ class Context:
         )
         while json_bytes(history) > target_bytes:
             user_turn_starts = [
-                index
-                for index, item in enumerate(history)
-                if isinstance(item, dict) and item.get("role") == "user"
+                index for index, item in enumerate(history) if is_prompt(item)
             ]
             if len(user_turn_starts) > 1:
+                dropped += history[: user_turn_starts[1]]
                 del history[: user_turn_starts[1]]
                 trimmed = True
                 continue
@@ -139,15 +143,7 @@ class Context:
             trimmed = True
 
         # The request itself is over the limit: give up on it.
-        if json_bytes(history) > max_bytes and any(
-            isinstance(item, dict) and item.get("role") == "user" for item in history
-        ):
-            replacement: ResponseInputParam = [
-                {
-                    "role": "user",
-                    "content": "[Previous request omitted because its history exceeded the context budget.]",
-                }
-            ]
-            history[:] = replacement if json_bytes(replacement) <= max_bytes else []
-            return True, True
-        return trimmed, False
+        if json_bytes(history) > max_bytes and any(map(is_prompt, history)):
+            history.clear()
+            return [], True, True
+        return dropped, trimmed, False

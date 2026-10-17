@@ -168,8 +168,9 @@ constructors; there is no global state:
 - `Context.trim(max_bytes)` does nothing until `history` exceeds the
   budget, then cuts it back to `TRIM_TARGET` (75%) of it: whole older turns
   first, then the current turn's oldest tool outputs (replaced with
-  a placeholder). The request itself is dropped only if it alone
-  exceeds the budget.
+  a placeholder). Only if the request alone exceeds the budget is it
+  dropped, emptying the history. It returns the whole turns it dropped, which
+  `run_turn` hands to `_summarize`.
 - Prompt caching (OpenAI, measured 2026-10-13 on gpt-5.4-mini; works with
   `store=False`): a request's prefix is cached from 1,024 tokens, and only an
   exact prefix match hits. Consequences that the code depends on:
@@ -193,8 +194,8 @@ constructors; there is no global state:
   is set.
 - When `Context.trim` drops whole turns, `run_turn` calls
   `Agent._summarize` (unless `SUMMARIZE=false`). It only makes the request,
-  reusing the normal instructions, tools and reasoning setting with
-  `tool_choice="none"` to stay on the cached prefix. The history side is
+  built by the same `Agent._request` as every other one plus
+  `tool_choice="none"`, to stay on the cached prefix. The history side is
   `Context`'s: `add_summary` inserts the result as a leading user message
   starting with "[Summary of the earlier conversation…]" (so a later trim
   folds it into the next summary) unless it is empty or would not fit, and
