@@ -105,24 +105,22 @@ def test_api_key_is_required() -> None:
 
 @pytest.fixture
 def env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Point the real get_config() at a temporary .env file."""
+    """Point the real load_config() at a temporary .env file."""
     path = tmp_path / ".env"
     monkeypatch.setitem(Config.model_config, "env_file", path)
-    config.get_config.cache_clear()
-    yield path
-    config.get_config.cache_clear()
+    return path
 
 
-def test_get_config_reads_the_env_file(env_file: Path) -> None:
+def test_load_config_reads_the_env_file(env_file: Path) -> None:
     env_file.write_text("OPENAI_API_KEY=file-key\nOPENAI_MODEL=file-model\n")
-    settings = config.get_config()
+    settings = config.load_config()
     assert settings.api_key == "file-key"
     assert settings.model == "file-model"
 
 
 def test_unknown_keys_in_the_env_file_are_ignored(env_file: Path) -> None:
     env_file.write_text("OPENAI_API_KEY=file-key\nSOMETHING_ELSE=x\n")
-    assert config.get_config().api_key == "file-key"
+    assert config.load_config().api_key == "file-key"
 
 
 def test_environment_overrides_the_env_file(
@@ -130,21 +128,14 @@ def test_environment_overrides_the_env_file(
 ) -> None:
     env_file.write_text("OPENAI_API_KEY=file-key\nOPENAI_MODEL=file-model\n")
     monkeypatch.setenv("OPENAI_MODEL", "env-model")
-    assert config.get_config().model == "env-model"
+    assert config.load_config().model == "env-model"
 
 
 def test_env_file_values_are_not_exported(env_file: Path) -> None:
     env_file.write_text("OPENAI_API_KEY=file-key\nBRAVE_API_KEY=brave-file-key\n")
-    assert config.get_config().brave_api_key == "brave-file-key"
+    assert config.load_config().brave_api_key == "brave-file-key"
     assert "BRAVE_API_KEY" not in os.environ
     assert "OPENAI_API_KEY" not in os.environ
-
-
-def test_get_config_is_cached(env_file: Path) -> None:
-    env_file.write_text("OPENAI_API_KEY=first\n")
-    first = config.get_config()
-    env_file.write_text("OPENAI_API_KEY=second\n")
-    assert config.get_config() is first
 
 
 def test_missing_workspace_is_reported_at_startup(
@@ -152,18 +143,18 @@ def test_missing_workspace_is_reported_at_startup(
 ) -> None:
     env_file.write_text("OPENAI_API_KEY=k\nWORKSPACE_ROOT=/definitely/not/here\n")
     with pytest.raises(SystemExit):
-        config.get_config()
+        config.load_config()
     assert (
         "WORKSPACE_ROOT: Path does not point to a directory" in capsys.readouterr().err
     )
 
 
-def test_get_config_reports_errors_and_exits(
+def test_load_config_reports_errors_and_exits(
     env_file: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     env_file.write_text("MAX_TURNS_PER_RUN=0\n")
     with pytest.raises(SystemExit) as exit_info:
-        config.get_config()
+        config.load_config()
     assert exit_info.value.code == 1
     captured = capsys.readouterr()
     assert captured.out == ""

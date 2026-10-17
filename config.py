@@ -1,5 +1,4 @@
 import sys
-from functools import cache
 from pathlib import Path
 
 from openai.types.shared import ReasoningEffort
@@ -64,9 +63,8 @@ class Config(BaseSettings):
     )
 
 
-@cache
-def get_config() -> Config:
-    """Load and validate the agent configuration on first use."""
+def load_config() -> Config:
+    """Load and validate the configuration, exiting with a readable error if it is invalid."""
     try:
         return Config()  # pyright: ignore[reportCallIssue]
     except ValidationError as exc:

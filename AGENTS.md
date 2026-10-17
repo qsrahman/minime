@@ -1,11 +1,18 @@
 # AGENTS.md
 
 ## Project
-MiniMe is a small interactive coding agent in three flat modules (no package):
-- `config.py` — `Config` and the cached `get_config()`.
-- `tools.py` — tool handlers, argument models, the `TOOLS` registry, schema
-  generation and `execute_tool_call`. Imports `config`.
-- `main.py` — system prompt, history trimming, the response loop and the REPL.
+MiniMe is a small interactive coding agent in three flat modules (no package),
+written as a handful of classes that get their dependencies through their
+constructors; there is no global state:
+- `config.py` — `Config` and `load_config()`, which reports invalid settings
+  and exits. `main()` calls it once and passes the result down.
+- `tools.py` — `Workspace` (path checking), `Tool` (abstract base) with one
+  subclass per tool, and `Toolbox` (`for_config()` builds the standard set,
+  `schemas()`, `execute()`). The byte-bounding and HTML helpers stay plain
+  functions. Imports `config` for the `Config` type only.
+- `main.py` — `Conversation` (history, token ratio, trimming), `Agent` (the
+  tool loop; prints nothing, reports through `on_text` / `on_notice` callbacks
+  and raises `TurnError`), `Repl` (terminal input and output) and `main()`.
   Imports both; nothing imports `main`.
 
 ## Commands
@@ -22,15 +29,22 @@ MiniMe is a small interactive coding agent in three flat modules (no package):
 
 ## Tests
 - `tests/conftest.py` has an autouse `settings` fixture: every test gets its own
-  `Config` and a temporary workspace, with `get_config` patched in `tools` and
-  `main`. Change behaviour per test by assigning to `settings` fields.
-- Shared helpers there: `site` (a local HTTP server with per-test routes),
-  `api` (see below), `tool_call` (a tool call for `execute_tool_call`), and
-  `kinds` (a one-label-per-item summary of `history` or of a request's input).
+  `Config` and a temporary workspace. Objects read their settings when they are
+  built, so change `settings` before building a `Toolbox` or `Agent`.
+- Shared helpers there: `tool` (the standard tools for the test, callable like
+  functions: `tool.read_file("f.txt", 3)`; arguments left out are None or
+  False), `site` (a local HTTP server with per-test routes), `api` (see below),
+  `tool_call` (a tool call for `Toolbox.execute`), and `kinds` (a
+  one-label-per-item summary of `history` or of a request's input).
+- Build agents in tests with `api.agent()`, never `main.Agent(settings)`: an
+  agent that makes its own OpenAI client sets up TLS, which on macOS starts a
+  system thread that outlives the test and breaks the pty tests' fork.
 - The loop tests (`tests/test_loop.py`) run the real `openai` client: the
   `api` fixture answers its HTTP requests through `httpx2.MockTransport` from
   a script of `response_body(...)` replies, HTTP error responses or exceptions,
-  and records each request body. There are no stand-in response objects, so
+  and records each request body. In `test_loop.py`, `run()` goes through
+  `Repl.ask` (output printed, problems reported) and `turn()` calls
+  `Agent.run_turn` directly (problems raised). There are no stand-in response objects, so
   these tests also catch SDK changes; keep them passing when upgrading `openai`.
   Use the `streaming` fixture to run a test in both modes.
 - `tests/test_terminal.py` runs the real `main.main()` as a child process on a
@@ -42,29 +56,27 @@ MiniMe is a small interactive coding agent in three flat modules (no package):
   tests take one second each because the timeout is a whole number of seconds.
 
 ## Conventions and gotchas
-- Adding a tool (all in `tools.py`): write the handler, a `ToolArguments`
-  subclass for its parameters, and one `TOOLS` entry. The schema is generated
-  from the model and the handler's docstring is the description sent to the
-  model.
+- Adding a tool (all in `tools.py`): write a `ToolArguments` subclass for its
+  parameters and a `Tool` subclass with `name`, `arguments_model` and
+  `run(args)`, then add it in `Toolbox.for_config`. The schema is generated
+  from the arguments model and the subclass docstring is the description sent
+  to the model. `run` raises on bad input; `Toolbox.execute` turns any
+  exception into `{"ok": False, "message": ...}`.
 - Tool schemas use OpenAI `strict: True`, so every argument field must be
-  required: declare optional ones as `X | None` with no default. Field names
-  must match the handler's parameters.
+  required: declare optional ones as `X | None` with no default.
 - Config uses `pydantic-settings` `validation_alias`, so field names differ from
   env vars: `OPENAI_MODEL`→`model`, `MAX_TURNS_PER_RUN`→`max_turns`,
   `COMMAND_TIMEOUT_SECONDS`→`command_timeout`, `STREAMING`→`streaming`,
   `REASONING_EFFORT`→`reasoning_effort`, `SUMMARIZE`→`summarize`,
   `MAX_HISTORY_TOKENS`→`max_history_tokens`, `WORKSPACE_ROOT`→`workspace_root`,
   `BRAVE_API_KEY`→`brave_api_key`. Unknown env vars are ignored.
-- Config is loaded lazily by the cached `get_config()`; there is no module-level
-  config object.
 - `workspace_root` defaults to the current working directory and must be an
   existing directory (checked at startup); `.env` is still read from next to
-  `config.py`. `resolve_workspace_path` restricts the file
-  tools and `run_command`'s `cwd` to it, but `run_command` itself runs with
+  `config.py`. `Workspace.resolve` restricts the file tools and
+  `run_command`'s `cwd` to it, but `run_command` itself runs with
   `shell=True` and is not sandboxed.
-- `system_prompt` is plain text; `main()` appends an Environment section
-  (workspace root, OS, date) before every turn and passes the result to
-  `run_turn` as `instructions`.
+- `system_prompt` is plain text; `Agent.instructions()` appends an Environment
+  section (workspace root, OS, date), and `run_turn` rebuilds it every turn.
 - Tool results are capped at `MAX_TOOL_OUTPUT_BYTES`, each in its own way:
   `read_file` stops at a line boundary and returns `next_start_line` (plus
   `next_offset` when a single over-long line is returned in pieces);
@@ -74,11 +86,11 @@ MiniMe is a small interactive coding agent in three flat modules (no package):
 - Tool results go into `history` as plain JSON (`ensure_ascii=False`, no
   wrapper object), so non-ASCII output is not inflated by escaping.
 - The web tools use `httpx2` (the client `openai` depends on; plain `httpx` is
-  not installed). `build_tool_schemas` omits `web_search` when `BRAVE_API_KEY`
-  is unset.
-- `web_fetch` downloads fresh whenever `offset` is empty and clears the
-  one-entry `fetch_page` cache; only continuation calls reuse the cached page.
-  The `httpx2` timeout is per read, so `fetch_page` also enforces an overall
+  not installed). `Toolbox.for_config` leaves `web_search` out when
+  `BRAVE_API_KEY` is unset.
+- `WebFetchTool` keeps the last page it downloaded; only continuation calls
+  (a non-empty `offset` for the same URL) reuse it, so a first part is always
+  fresh. The `httpx2` timeout is per read, so `fetch_page` also enforces an overall
   `WEB_TIMEOUT_SECONDS` deadline on the download.
 - `TextExtractor` drops `script`/`style`/`nav`/`header`/`footer`/`aside` and
   containers with a navigation-type ARIA `role`, keeps `<pre>` verbatim, and
@@ -86,8 +98,10 @@ MiniMe is a small interactive coding agent in three flat modules (no package):
 - The response loop calls `client.responses.stream(..., store=False)` (or
   `.create` when `STREAMING=false`) and appends outputs to in-memory
   `history`; iterations are capped by `MAX_TURNS_PER_RUN`.
-- `Conversation` (in `main.py`) holds `history` and `tokens_per_byte`. The
-  token limit is enforced in bytes: `run_turn` converts `max_history_tokens`
+- `Conversation` (in `main.py`) holds `history` and `tokens_per_byte`, and all
+  history changes go through it (`add_prompt`, `add_step`,
+  `discard_unanswered`, `trim`, `clear`). The token limit is enforced in bytes:
+  `Agent.run_turn` converts `max_history_tokens`
   to a byte budget with that ratio (minus the instructions and tool schemas,
   which are sent every time) and re-learns the ratio from each response's
   `usage.input_tokens`, bounded to 0.1-1.0. `/clear` empties `history` and
@@ -97,10 +111,10 @@ MiniMe is a small interactive coding agent in three flat modules (no package):
   returns that automatically when `store=False` (checked 2026-10-13 on
   gpt-5.4-mini, gpt-5-mini and o4-mini); no `include` parameter is needed. Do
   not strip or rebuild output items before appending them to `history`.
-- `trim_history(history, max_bytes)` does nothing until `history` exceeds the
+- `Conversation.trim(max_bytes)` does nothing until `history` exceeds the
   budget, then cuts it back to `TRIM_TARGET` (75%) of it: whole older turns
   first, then the current turn's oldest tool outputs (replaced with
-  `OMITTED_TOOL_OUTPUT`). The request itself is dropped only if it alone
+  a placeholder). The request itself is dropped only if it alone
   exceeds the budget.
 - Prompt caching (OpenAI, measured 2026-10-13 on gpt-5.4-mini; works with
   `store=False`): a request's prefix is cached from 1,024 tokens, and only an
@@ -113,28 +127,31 @@ MiniMe is a small interactive coding agent in three flat modules (no package):
   - `system_prompt` plus the tool schemas come to about 830 tokens, under the
     minimum, so they are not cached on their own; caching starts once the
     conversation takes the request past 1,024 tokens. Keep that part static
-    and keep per-session values in the Environment section, which `main()`
-    appends last.
+    and keep per-session values in the Environment section, which
+    `Agent.instructions()` appends last.
 - A streamed response that does not complete ends with a `response.incomplete`
   or `response.failed` event and the SDK's `get_final_response()` then raises,
-  so `run_turn` takes the response from that event; both statuses are reported
-  and end the turn. The incomplete case was confirmed against the real API; the
+  so `Agent._create_response` takes the response from that event; both
+  statuses end the turn with a `TurnError`, which `Repl` reports. The incomplete case was confirmed against the real API; the
   failed case could not be produced there and is covered only by the fixture.
 - `[thinking…]` is printed when a stream adds a reasoning item, so it only
   appears in streaming mode. `reasoning` is sent only when `REASONING_EFFORT`
   is set.
-- When `trim_history` drops whole turns, `run_turn` calls `summarize_dropped`
-  (unless `SUMMARIZE=false`), which inserts the result as a leading user
-  message starting with `SUMMARY_MARKER` (so a later trim folds it into the
-  next summary). The summary request
+- When `Conversation.trim` drops whole turns, `run_turn` calls
+  `Agent._summarize` (unless `SUMMARIZE=false`), which inserts the result as a
+  leading user message starting with "[Summary of the earlier conversation…]"
+  (so a later trim folds it into the next summary). The summary request
   reuses the normal instructions, tools and reasoning setting with
   `tool_choice="none"` to stay on the cached prefix. A failed request falls
   back to dropping; Ctrl-C during it puts the dropped turns back; a summary
   that is empty or would not fit is not inserted.
-- `run_turn` appends a model response and all of its tool outputs to `history`
+- `Conversation.add_step` records a model response and all of its tool outputs
   together, so history never holds a tool call without an output. On Ctrl-C or
   an API error, completed steps stay, tool calls that did not finish get
-  `INTERRUPTED_TOOL_RESULT`, and a prompt with no completed step is removed.
+  an "Interrupted by the user." result, and a prompt with no completed step is removed;
+  the exception then propagates to `Repl`, which reports it.
+- `Agent.usage` holds the token counts of the last turn; `Repl.ask` prints the
+  `[Context: …]` line from it after reporting any error.
 - `.env` is gitignored but present locally, overriding the model and base URL to a
   local OpenAI-compatible endpoint. It is read by `Config` only and is not
   exported to `os.environ`. Do not print or commit secrets.

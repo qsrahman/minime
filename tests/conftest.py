@@ -14,6 +14,15 @@ import config
 import main
 import tools
 
+# Texts the agent puts into history, checked by the tests.
+OMITTED_TOOL_OUTPUT = (
+    "[Tool output omitted to fit the context budget; "
+    "call the tool again if it is still needed.]"
+)
+SUMMARY_MARKER = (
+    "[Summary of the earlier conversation, which was removed to save space]"
+)
+
 ENV_VARS = (
     "OPENAI_API_KEY",
     "OPENAI_MODEL",
@@ -31,7 +40,11 @@ ENV_VARS = (
 
 @pytest.fixture(autouse=True)
 def settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> config.Config:
-    """Give every test its own settings and workspace, isolated from .env and the shell."""
+    """Give every test its own settings and workspace, isolated from .env and the shell.
+
+    Code under test reads these settings when it is built (a Toolbox, an
+    Agent), so change them before building, not after.
+    """
     for name in ENV_VARS:
         monkeypatch.delenv(name, raising=False)
     workspace = tmp_path / "workspace"
@@ -42,15 +55,52 @@ def settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> config.Config:
         WORKSPACE_ROOT=workspace,
         STREAMING=False,
     )
-    monkeypatch.setattr(tools, "get_config", lambda: test_settings)
-    monkeypatch.setattr(main, "get_config", lambda: test_settings)
-    tools.fetch_page.cache_clear()
     return test_settings
 
 
 @pytest.fixture
 def workspace(settings: config.Config) -> Path:
     return settings.workspace_root
+
+
+def call(tool: tools.Tool[Any], *args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Run a tool directly, the way Toolbox would after validating arguments.
+
+    Positional arguments follow the argument model's field order; fields left
+    out are None, or False for flags.
+    """
+    fields = tool.arguments_model.model_fields
+    values = {
+        name: False if info.annotation is bool else None
+        for name, info in fields.items()
+    }
+    values |= dict(zip(fields, args, strict=False)) | kwargs
+    return tool.run(tool.arguments_model.model_validate(values))
+
+
+class Tools:
+    """The standard tools for the test's settings, callable like functions:
+    tool.read_file("f.txt", 3, 5). Built on first use, so a test can change
+    its settings first."""
+
+    def __init__(self, settings: config.Config) -> None:
+        self.settings = settings
+        self._toolbox: tools.Toolbox | None = None
+
+    @property
+    def toolbox(self) -> tools.Toolbox:
+        if self._toolbox is None:
+            self._toolbox = tools.Toolbox.for_config(self.settings)
+        return self._toolbox
+
+    def __getattr__(self, name: str) -> Callable[..., dict[str, Any]]:
+        tool = self.toolbox.tools[name]
+        return lambda *args, **kwargs: call(tool, *args, **kwargs)
+
+
+@pytest.fixture
+def tool(settings: config.Config) -> Tools:
+    return Tools(settings)
 
 
 def tool_call(
@@ -299,7 +349,8 @@ class Api:
     `requests` records the JSON body of every request the client sent.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, settings: config.Config) -> None:
+        self.settings = settings
         self.replies: list[Any] = []
         self.requests: list[dict[str, Any]] = []
         self.client = openai.OpenAI(
@@ -308,6 +359,18 @@ class Api:
             max_retries=0,
             http_client=httpx2.Client(transport=httpx2.MockTransport(self.handle)),
         )
+
+    def agent(self, conversation: main.Conversation | None = None) -> main.Agent:
+        """An Agent for the test's settings that talks to this endpoint.
+
+        Tests always build agents this way: an Agent left to make its own
+        client sets up TLS, which on macOS starts a system thread that outlives
+        the test and makes the pseudo-terminal tests' fork unsafe.
+        """
+        agent = main.Agent(self.settings, client=self.client)
+        if conversation is not None:
+            agent.conversation = conversation
+        return agent
 
     def handle(self, request: httpx2.Request) -> httpx2.Response:
         assert request.method == "POST"
@@ -332,8 +395,8 @@ class Api:
 
 
 @pytest.fixture
-def api() -> Api:
-    return Api()
+def api(settings: config.Config) -> Api:
+    return Api(settings)
 
 
 def kinds(items: list[Any]) -> list[str]:

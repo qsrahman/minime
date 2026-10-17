@@ -67,7 +67,7 @@ Web pages and search results are passed to the model as they are. A page can con
 
 ## Development
 
-The project declares its runtime dependencies in `pyproject.toml`. Use `uv sync` to install them and `uv run main.py` to start the agent from the project directory. The code is three modules: `config.py` (settings), `tools.py` (the agent's tools) and `main.py` (the conversation loop).
+The project declares its runtime dependencies in `pyproject.toml`. Use `uv sync` to install them and `uv run main.py` to start the agent from the project directory. The code is three modules: `config.py` (settings), `tools.py` (the agent's tools: a `Tool` class per tool, collected in a `Toolbox`) and `main.py` (`Conversation` for the history, `Agent` for the tool loop and `Repl` for the terminal).
 
 Run the tests with:
 

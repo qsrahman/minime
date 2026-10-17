@@ -3,7 +3,7 @@ from typing import Any
 
 import httpx2
 import pytest
-from conftest import Site
+from conftest import Site, Tools
 
 import config
 import tools
@@ -166,9 +166,9 @@ PAGE = """<!doctype html><html><head><title>Fixture</title><script>var x = "SCRI
 
 
 class TestWebFetch:
-    def test_html_page(self, site: Site) -> None:
+    def test_html_page(self, tool: Tools, site: Site) -> None:
         url = site.add("/page.html", PAGE)
-        assert tools.web_fetch(url) == {
+        assert tool.web_fetch(url) == {
             "ok": True,
             "url": url,
             "title": "Fixture",
@@ -181,7 +181,7 @@ class TestWebFetch:
         }
 
     def test_sends_a_user_agent(
-        self, site: Site, monkeypatch: pytest.MonkeyPatch
+        self, tool: Tools, site: Site, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         seen: dict[str, Any] = {}
         real_stream = httpx2.stream
@@ -191,7 +191,7 @@ class TestWebFetch:
             return real_stream(method, url, **kwargs)
 
         monkeypatch.setattr(httpx2, "stream", recording_stream)
-        tools.web_fetch(site.add("/p", "<p>x</p>"))
+        tool.web_fetch(site.add("/p", "<p>x</p>"))
         assert seen["method"] == "GET"
         assert seen["headers"] == {"User-Agent": "minime/0.1"}
         assert seen["follow_redirects"] is True
@@ -208,14 +208,14 @@ class TestWebFetch:
         ],
     )
     def test_non_html_text_is_returned_as_is(
-        self, site: Site, content_type: str, body: str
+        self, tool: Tools, site: Site, content_type: str, body: str
     ) -> None:
-        result = tools.web_fetch(site.add("/data", body, content_type))
+        result = tool.web_fetch(site.add("/data", body, content_type))
         assert result["content"] == body
         assert result["title"] == ""
 
-    def test_xhtml_is_treated_as_html(self, site: Site) -> None:
-        result = tools.web_fetch(
+    def test_xhtml_is_treated_as_html(self, tool: Tools, site: Site) -> None:
+        result = tool.web_fetch(
             site.add(
                 "/x", "<html><body><p>Body</p></body></html>", "application/xhtml+xml"
             )
@@ -225,63 +225,65 @@ class TestWebFetch:
     @pytest.mark.parametrize(
         "content_type", ["image/png", "application/pdf", "application/octet-stream"]
     )
-    def test_binary_content_is_rejected(self, site: Site, content_type: str) -> None:
+    def test_binary_content_is_rejected(
+        self, tool: Tools, site: Site, content_type: str
+    ) -> None:
         with pytest.raises(
             ValueError, match=f"unsupported content type: {content_type}"
         ):
-            tools.web_fetch(site.add("/file", b"\x89PNG\r\n", content_type))
+            tool.web_fetch(site.add("/file", b"\x89PNG\r\n", content_type))
 
-    def test_missing_content_type_is_rejected(self, site: Site) -> None:
+    def test_missing_content_type_is_rejected(self, tool: Tools, site: Site) -> None:
         with pytest.raises(ValueError, match="unsupported content type: unknown"):
-            tools.web_fetch(site.add("/file", b"data", content_type=None))
+            tool.web_fetch(site.add("/file", b"data", content_type=None))
 
-    def test_not_found(self, site: Site) -> None:
+    def test_not_found(self, tool: Tools, site: Site) -> None:
         with pytest.raises(httpx2.HTTPStatusError, match="404"):
-            tools.web_fetch(site.url("/missing"))
+            tool.web_fetch(site.url("/missing"))
 
-    def test_server_error(self, site: Site) -> None:
+    def test_server_error(self, tool: Tools, site: Site) -> None:
         with pytest.raises(httpx2.HTTPStatusError, match="500"):
-            tools.web_fetch(site.add("/broken", "oops", status=500))
+            tool.web_fetch(site.add("/broken", "oops", status=500))
 
-    def test_connection_refused(self, site: Site) -> None:
+    def test_connection_refused(self, tool: Tools, site: Site) -> None:
         with pytest.raises(httpx2.ConnectError):
-            tools.web_fetch("http://127.0.0.1:1/")
+            tool.web_fetch("http://127.0.0.1:1/")
 
-    def test_unsupported_scheme(self) -> None:
+    def test_unsupported_scheme(self, tool: Tools) -> None:
         with pytest.raises(httpx2.UnsupportedProtocol):
-            tools.web_fetch("ftp://example.com/file")
+            tool.web_fetch("ftp://example.com/file")
 
     def test_redirects_are_followed_and_links_use_the_final_url(
-        self, site: Site
+        self, tool: Tools, site: Site
     ) -> None:
         final = site.add("/new/page.html", '<p><a href="other.html">other</a></p>')
         start = site.add("/old", status=302, headers={"Location": "/new/page.html"})
-        result = tools.web_fetch(start)
+        result = tool.web_fetch(start)
         assert result["url"] == final
         assert result["content"] == f"[other]({site.url('/new/other.html')})"
 
-    def test_declared_charset_is_used(self, site: Site) -> None:
+    def test_declared_charset_is_used(self, tool: Tools, site: Site) -> None:
         url = site.add(
             "/latin", "café".encode("latin-1"), "text/plain; charset=iso-8859-1"
         )
-        assert tools.web_fetch(url)["content"] == "café"
+        assert tool.web_fetch(url)["content"] == "café"
 
-    def test_undecodable_bytes_are_replaced(self, site: Site) -> None:
+    def test_undecodable_bytes_are_replaced(self, tool: Tools, site: Site) -> None:
         url = site.add("/bad", b"ok \xff end", "text/plain; charset=utf-8")
-        assert tools.web_fetch(url)["content"] == "ok � end"
+        assert tool.web_fetch(url)["content"] == "ok � end"
 
-    def test_negative_offset(self, site: Site) -> None:
+    def test_negative_offset(self, tool: Tools, site: Site) -> None:
         with pytest.raises(ValueError, match="offset must not be negative"):
-            tools.web_fetch(site.add("/p", "<p>x</p>"), -1)
+            tool.web_fetch(site.add("/p", "<p>x</p>"), -1)
         assert site.hits == []
 
-    def test_long_page_is_returned_in_parts(self, site: Site) -> None:
+    def test_long_page_is_returned_in_parts(self, tool: Tools, site: Site) -> None:
         body = "".join(f"line {i:05d}\n" for i in range(4000))  # 44 KB
         url = site.add("/long.txt", body, "text/plain")
 
         parts, offset = [], None
         while True:
-            result = tools.web_fetch(url, offset)
+            result = tool.web_fetch(url, offset)
             assert len(result["content"].encode()) <= LIMIT
             assert result["total_chars"] == len(body)
             parts.append(result["content"])
@@ -293,52 +295,58 @@ class TestWebFetch:
         assert "".join(parts) == body
         assert site.hits == ["/long.txt"]  # continuation calls reuse the download
 
-    def test_multibyte_parts_stay_within_the_byte_limit(self, site: Site) -> None:
+    def test_multibyte_parts_stay_within_the_byte_limit(
+        self, tool: Tools, site: Site
+    ) -> None:
         body = "é" * 20000  # 40 KB as UTF-8
         url = site.add("/utf.txt", body, "text/plain; charset=utf-8")
-        first = tools.web_fetch(url)
+        first = tool.web_fetch(url)
         assert first["content"] == "é" * (LIMIT // 2)
         assert first["next_offset"] == LIMIT // 2
-        rest = tools.web_fetch(url, first["next_offset"])
+        rest = tool.web_fetch(url, first["next_offset"])
         assert rest["content"].startswith("é")
 
-    def test_offset_past_the_end(self, site: Site) -> None:
-        result = tools.web_fetch(site.add("/p", "short", "text/plain"), 100)
+    def test_offset_past_the_end(self, tool: Tools, site: Site) -> None:
+        result = tool.web_fetch(site.add("/p", "short", "text/plain"), 100)
         assert (result["content"], result["next_offset"]) == ("", None)
 
-    def test_first_part_is_always_downloaded_fresh(self, site: Site) -> None:
+    def test_first_part_is_always_downloaded_fresh(
+        self, tool: Tools, site: Site
+    ) -> None:
         url = site.add("/live", "version one", "text/plain")
-        assert tools.web_fetch(url)["content"] == "version one"
+        assert tool.web_fetch(url)["content"] == "version one"
         site.add("/live", "version two", "text/plain")
-        assert tools.web_fetch(url)["content"] == "version two"
-        assert tools.web_fetch(url, 0)["content"] == "version two"
+        assert tool.web_fetch(url)["content"] == "version two"
+        assert tool.web_fetch(url, 0)["content"] == "version two"
         assert site.hits == ["/live"] * 3
 
-    def test_fetching_another_page_replaces_the_cached_one(self, site: Site) -> None:
+    def test_fetching_another_page_replaces_the_cached_one(
+        self, tool: Tools, site: Site
+    ) -> None:
         first = site.add("/a", "a" * 100, "text/plain")
         second = site.add("/b", "b" * 100, "text/plain")
-        tools.web_fetch(first)
-        tools.web_fetch(second)
-        assert tools.web_fetch(first, 50)["content"] == "a" * 50
+        tool.web_fetch(first)
+        tool.web_fetch(second)
+        assert tool.web_fetch(first, 50)["content"] == "a" * 50
         assert site.hits == ["/a", "/b", "/a"]
 
     def test_download_is_capped_and_reported(
-        self, site: Site, monkeypatch: pytest.MonkeyPatch
+        self, tool: Tools, site: Site, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(tools, "MAX_FETCH_BYTES", 1000)
-        result = tools.web_fetch(site.add("/big", "x" * 5000, "text/plain"))
+        result = tool.web_fetch(site.add("/big", "x" * 5000, "text/plain"))
         assert result["total_chars"] == 1000
         assert result["truncated"] is True
 
     def test_download_at_the_cap_is_not_reported_as_truncated(
-        self, site: Site, monkeypatch: pytest.MonkeyPatch
+        self, tool: Tools, site: Site, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(tools, "MAX_FETCH_BYTES", 1000)
-        result = tools.web_fetch(site.add("/exact", "x" * 1000, "text/plain"))
+        result = tool.web_fetch(site.add("/exact", "x" * 1000, "text/plain"))
         assert (result["total_chars"], result["truncated"]) == (1000, False)
 
     def test_slow_download_hits_the_deadline(
-        self, site: Site, monkeypatch: pytest.MonkeyPatch
+        self, tool: Tools, site: Site, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         def drip(wfile: Any) -> None:
             for _ in range(100):
@@ -349,15 +357,15 @@ class TestWebFetch:
         monkeypatch.setattr(tools, "WEB_TIMEOUT_SECONDS", 0.3)
         started = time.monotonic()
         with pytest.raises(TimeoutError, match="download took longer"):
-            tools.web_fetch(site.add("/drip", drip, "text/plain"))
+            tool.web_fetch(site.add("/drip", drip, "text/plain"))
         assert time.monotonic() - started < 3
 
-    def test_failed_fetch_is_not_cached(self, site: Site) -> None:
+    def test_failed_fetch_is_not_cached(self, tool: Tools, site: Site) -> None:
         url = site.url("/later")
         with pytest.raises(httpx2.HTTPStatusError):
-            tools.web_fetch(url)
+            tool.web_fetch(url)
         site.add("/later", "now here", "text/plain")
-        assert tools.web_fetch(url)["content"] == "now here"
+        assert tool.web_fetch(url)["content"] == "now here"
 
 
 class FakeSearchResponse:
@@ -391,15 +399,18 @@ def brave(settings: config.Config, monkeypatch: pytest.MonkeyPatch) -> dict[str,
 
 
 class TestWebSearch:
-    def test_requires_an_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_is_only_offered_with_an_api_key(
+        self, settings: config.Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr(
             httpx2, "get", lambda *a, **k: pytest.fail("no request expected")
         )
-        with pytest.raises(ValueError, match="BRAVE_API_KEY is not set"):
-            tools.web_search("query")
+        assert "web_search" not in tools.Toolbox.for_config(settings).tools
+        settings.brave_api_key = "brave-key"
+        assert "web_search" in tools.Toolbox.for_config(settings).tools
 
-    def test_request(self, brave: dict[str, Any]) -> None:
-        tools.web_search("uv sync site:astral.sh")
+    def test_request(self, tool: Tools, brave: dict[str, Any]) -> None:
+        tool.web_search("uv sync site:astral.sh")
         assert brave["calls"] == [
             {
                 "url": "https://api.search.brave.com/res/v1/web/search",
@@ -413,17 +424,21 @@ class TestWebSearch:
         ]
 
     @pytest.mark.parametrize("count", [1, 20])
-    def test_count_is_passed_through(self, brave: dict[str, Any], count: int) -> None:
-        tools.web_search("q", count)
+    def test_count_is_passed_through(
+        self, tool: Tools, brave: dict[str, Any], count: int
+    ) -> None:
+        tool.web_search("q", count)
         assert brave["calls"][0]["params"]["count"] == count
 
     @pytest.mark.parametrize("count", [0, -1, 21])
-    def test_count_out_of_range(self, brave: dict[str, Any], count: int) -> None:
+    def test_count_out_of_range(
+        self, tool: Tools, brave: dict[str, Any], count: int
+    ) -> None:
         with pytest.raises(ValueError, match="count must be between 1 and 20"):
-            tools.web_search("q", count)
+            tool.web_search("q", count)
         assert brave["calls"] == []
 
-    def test_results_are_cleaned(self, brave: dict[str, Any]) -> None:
+    def test_results_are_cleaned(self, tool: Tools, brave: dict[str, Any]) -> None:
         brave["response"] = FakeSearchResponse(
             {
                 "web": {
@@ -439,7 +454,7 @@ class TestWebSearch:
                 }
             }
         )
-        assert tools.web_search("q") == {
+        assert tool.web_search("q") == {
             "ok": True,
             "results": [
                 {
@@ -455,13 +470,15 @@ class TestWebSearch:
         "payload",
         [{}, {"web": {}}, {"web": {"results": []}}, {"query": {"original": "q"}}],
     )
-    def test_no_results(self, brave: dict[str, Any], payload: dict[str, Any]) -> None:
+    def test_no_results(
+        self, tool: Tools, brave: dict[str, Any], payload: dict[str, Any]
+    ) -> None:
         brave["response"] = FakeSearchResponse(payload)
-        assert tools.web_search("q") == {"ok": True, "results": []}
+        assert tool.web_search("q") == {"ok": True, "results": []}
 
-    def test_http_errors_propagate(self, brave: dict[str, Any]) -> None:
+    def test_http_errors_propagate(self, tool: Tools, brave: dict[str, Any]) -> None:
         brave["response"] = FakeSearchResponse(
             None, error=RuntimeError("429 Too Many Requests")
         )
         with pytest.raises(RuntimeError, match="429"):
-            tools.web_search("q")
+            tool.web_search("q")

@@ -1,5 +1,6 @@
 import json
 import platform
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, cast
@@ -7,14 +8,15 @@ from typing import Any, cast
 from openai import Omit, OpenAI, OpenAIError, omit
 from openai.types.responses import (
     EasyInputMessageParam,
+    Response,
     ResponseFunctionToolCall,
     ResponseInputParam,
 )
 from openai.types.responses.tool_param import ToolParam
 from openai.types.shared_params import Reasoning
 
-from config import get_config
-from tools import build_tool_schemas, execute_tool_call
+from config import Config, load_config
+from tools import Toolbox
 
 try:
     import readline  # noqa: F401  # line editing and history for input()
@@ -27,22 +29,11 @@ DEFAULT_TOKENS_PER_BYTE = 0.25
 # the limit. Each cut changes the start of the prompt, which discards the
 # provider's prompt cache; cutting further leaves many requests before the next.
 TRIM_TARGET = 0.75
-INTERRUPTED_TOOL_RESULT = {
-    "ok": False,
-    "message": "Interrupted by the user.",
-}
-SUMMARY_MARKER = (
-    "[Summary of the earlier conversation, which was removed to save space]"
-)
 SUMMARY_REQUEST = (
     "The conversation above is about to be removed to save space. Write a summary "
     "of it for your own later use: what the user asked for, what was done and "
     "found, the files and commands involved, decisions made, and anything still "
     "unfinished. Be specific, use at most 300 words, and do not call tools."
-)
-OMITTED_TOOL_OUTPUT = (
-    "[Tool output omitted to fit the context budget; "
-    "call the tool again if it is still needed.]"
 )
 
 system_prompt = """
@@ -63,325 +54,449 @@ Operating rules:
 """
 
 
-@dataclass
-class Conversation:
-    """The message history and how many tokens the model counts per byte of it."""
-
-    history: ResponseInputParam = field(default_factory=list)
-    tokens_per_byte: float = DEFAULT_TOKENS_PER_BYTE
-
-
 def json_bytes(value: object) -> int:
     return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
 
 
-def trim_history(history: ResponseInputParam, max_bytes: int) -> tuple[bool, bool]:
-    if json_bytes(history) <= max_bytes:
-        return False, False
+@dataclass
+class Conversation:
+    """The message history and how many tokens the model counts per byte of it.
 
-    trimmed = False
-    target_bytes = int(max_bytes * TRIM_TARGET)
-    while json_bytes(history) > target_bytes:
-        user_turn_starts = [
-            index
-            for index, item in enumerate(history)
-            if isinstance(item, dict) and item.get("role") == "user"
-        ]
-        if len(user_turn_starts) > 1:
-            del history[: user_turn_starts[1]]
-            trimmed = True
-            continue
-
-        # Only the current request is left: free space by omitting its oldest
-        # tool outputs.
-        oldest_output = next(
-            (
-                item
-                for item in history
-                if isinstance(item, dict)
-                and item.get("type") == "function_call_output"
-                and item.get("output") != OMITTED_TOOL_OUTPUT
-            ),
-            None,
-        )
-        if oldest_output is None:
-            break  # nothing left that can be dropped
-        cast(dict[str, Any], oldest_output)["output"] = OMITTED_TOOL_OUTPUT
-        trimmed = True
-
-    # The request itself is over the limit: give up on it.
-    if json_bytes(history) > max_bytes and any(
-        isinstance(item, dict) and item.get("role") == "user" for item in history
-    ):
-        replacement: ResponseInputParam = [
-            {
-                "role": "user",
-                "content": "[Previous request omitted because its history exceeded the context budget.]",
-            }
-        ]
-        history[:] = replacement if json_bytes(replacement) <= max_bytes else []
-        return True, True
-    return trimmed, False
-
-
-def summarize_dropped(
-    client: OpenAI,
-    history: ResponseInputParam,
-    dropped: ResponseInputParam,
-    max_bytes: int,
-    tool_schemas: list[ToolParam],
-    instructions: str,
-    reasoning: Reasoning | Omit,
-) -> int:
-    """Put a model-written summary of the dropped turns at the start of history.
-
-    Returns the output tokens the summary cost.
+    Every function_call is followed by its function_call_output, because the
+    API rejects history otherwise; add_step records them together.
     """
-    print("[Summarising earlier conversation to save space…]")
-    try:
-        # The same instructions, tools and reasoning setting as every other
-        # request: the dropped items were the start of the previous prompt, so
-        # the provider has nearly all of this one cached.
-        reply = client.responses.create(
-            model=get_config().model,
-            instructions=instructions,
-            input=[*dropped, {"role": "user", "content": SUMMARY_REQUEST}],
-            tools=tool_schemas,
-            tool_choice="none",
-            reasoning=reasoning,
-            store=False,
+
+    history: ResponseInputParam = field(default_factory=list)
+    tokens_per_byte: float = DEFAULT_TOKENS_PER_BYTE
+
+    def clear(self) -> None:
+        """Forget the history; the learned tokens per byte still apply."""
+        self.history.clear()
+
+    def add_prompt(self, prompt: str) -> EasyInputMessageParam:
+        """Start a turn with the user's message, which is returned."""
+        message: EasyInputMessageParam = {"role": "user", "content": prompt}
+        self.history.append(message)
+        return message
+
+    def add_step(
+        self,
+        output: Sequence[Any],
+        tool_calls: Sequence[ResponseFunctionToolCall],
+        results: Sequence[dict[str, Any]],
+    ) -> None:
+        """Record a response's output items and one output per tool call.
+
+        Calls without a result, because Ctrl-C interrupted them, are recorded
+        as interrupted.
+        """
+        interrupted = {"ok": False, "message": "Interrupted by the user."}
+        missing = len(tool_calls) - len(results)
+        self.history.extend(cast(ResponseInputParam, output))
+        self.history.extend(
+            {
+                "type": "function_call_output",
+                "call_id": call.call_id,
+                "output": json.dumps(result, ensure_ascii=False),
+            }
+            for call, result in zip(
+                tool_calls,
+                [*results, *[interrupted] * missing],
+                strict=True,
+            )
         )
-    except KeyboardInterrupt:
-        history[:0] = dropped
-        raise
-    except OpenAIError as exc:
-        print(f"[No summary ({type(exc).__name__}); it was dropped instead]")
-        return 0
 
-    summary = reply.output_text.strip()
-    summary_message: EasyInputMessageParam = {
-        "role": "user",
-        "content": f"{SUMMARY_MARKER}\n{summary}",
-    }
-    if summary and json_bytes([summary_message, *history]) <= max_bytes:
-        history.insert(0, summary_message)
-    return reply.usage.output_tokens if reply.usage else 0
+    def discard_unanswered(self, prompt: EasyInputMessageParam) -> None:
+        """Drop the turn's prompt if no step was recorded after it."""
+        if self.history and self.history[-1] is prompt:
+            self.history.pop()
 
+    def trim(self, max_bytes: int) -> tuple[bool, bool]:
+        """Trim the history in place to fit max_bytes.
 
-def run_turn(
-    client: OpenAI,
-    conversation: Conversation,
-    prompt: str,
-    tool_schemas: list[ToolParam],
-    instructions: str = "",
-) -> None:
-    """Run one user turn, handling function calls until the model responds with a final answer."""
-    settings = get_config()
-    history = conversation.history
-    # Instructions and tool schemas go out with every request, so they count
-    # against the token limit as well.
-    overhead_bytes = len(instructions.encode("utf-8")) + json_bytes(tool_schemas)
-    # Left out unless configured, so endpoints without reasoning are unaffected.
-    reasoning: Reasoning | Omit = (
-        {"effort": settings.reasoning_effort} if settings.reasoning_effort else omit
-    )
-    context_tokens = 0
-    cached_tokens = 0
-    output_tokens = 0
-    user_message: EasyInputMessageParam = {"role": "user", "content": prompt}
-    history.append(user_message)
+        Returns whether anything was trimmed and whether the current request
+        itself had to be dropped.
+        """
+        history = self.history
+        if json_bytes(history) <= max_bytes:
+            return False, False
 
-    try:
-        for _ in range(settings.max_turns):
-            max_bytes = (
-                int(settings.max_history_tokens / conversation.tokens_per_byte)
-                - overhead_bytes
-            )
-            before = list(history)
-            trimmed, current_turn_dropped = trim_history(history, max_bytes)
-            # Whole turns are only ever removed from the front.
-            dropped = (
-                [] if current_turn_dropped else before[: len(before) - len(history)]
-            )
-            if dropped and settings.summarize:
-                output_tokens += summarize_dropped(
-                    client,
-                    history,
-                    dropped,
-                    max_bytes,
-                    tool_schemas,
-                    instructions,
-                    reasoning,
-                )
-            elif trimmed:
-                print(
-                    "[Conversation history trimmed to fit "
-                    f"{settings.max_history_tokens} tokens]"
-                )
-            if current_turn_dropped:
-                print("[Turn stopped because its history exceeded the context budget]")
-                return
-            request_bytes = overhead_bytes + json_bytes(history)
-
-            if settings.streaming:
-                with client.responses.stream(
-                    model=settings.model,
-                    instructions=instructions,
-                    input=history,
-                    tools=tool_schemas,
-                    reasoning=reasoning,
-                    store=False,
-                ) as stream:
-                    unfinished = None
-                    for event in stream:
-                        if event.type == "response.output_text.delta":
-                            print(event.delta, end="", flush=True)
-                        elif (
-                            event.type == "response.output_item.added"
-                            and event.item.type == "reasoning"
-                        ):
-                            print("[thinking…]", flush=True)
-                        elif (
-                            event.type == "response.incomplete"
-                            or event.type == "response.failed"
-                        ):
-                            # get_final_response() only knows completed responses.
-                            unfinished = event.response
-                    response = unfinished or stream.get_final_response()
-            else:
-                response = client.responses.create(
-                    model=settings.model,
-                    instructions=instructions,
-                    input=history,
-                    tools=tool_schemas,
-                    reasoning=reasoning,
-                    store=False,
-                )
-
-            if response.usage:
-                output_tokens += response.usage.output_tokens
-            if response.usage and response.usage.input_tokens:
-                context_tokens = response.usage.input_tokens
-                # Cached tokens are part of input_tokens: they cost less but
-                # still fill the context window, so the limit counts them.
-                details = response.usage.input_tokens_details
-                cached_tokens = details.cached_tokens if details else 0
-                # Learn this model's tokens per byte from what it just counted;
-                # the bounds guard against an endpoint reporting nonsense.
-                conversation.tokens_per_byte = min(
-                    1.0, max(0.1, context_tokens / request_bytes)
-                )
-
-            if response.output_text:
-                if settings.streaming:
-                    print()
-                else:
-                    print(response.output_text)
-
-            if response.status == "incomplete":
-                reason = (
-                    response.incomplete_details.reason
-                    if response.incomplete_details
-                    else "unknown"
-                )
-                print(f"[Response incomplete: {reason}]")
-                return
-            if response.status == "failed":
-                message = response.error.message if response.error else "unknown error"
-                print(f"[Response failed: {message}]")
-                return
-
-            tool_calls = [
-                item
-                for item in response.output
-                if isinstance(item, ResponseFunctionToolCall)
+        trimmed = False
+        target_bytes = int(max_bytes * TRIM_TARGET)
+        omitted = (
+            "[Tool output omitted to fit the context budget; "
+            "call the tool again if it is still needed.]"
+        )
+        while json_bytes(history) > target_bytes:
+            user_turn_starts = [
+                index
+                for index, item in enumerate(history)
+                if isinstance(item, dict) and item.get("role") == "user"
             ]
-            tool_results: list[dict[str, Any]] = []
-            try:
-                for call in tool_calls:
-                    tool_results.append(execute_tool_call(call))
-            finally:
-                # Keep each response step complete, even when Ctrl-C interrupts a tool.
-                tool_results.extend(
-                    [INTERRUPTED_TOOL_RESULT] * (len(tool_calls) - len(tool_results))
-                )
-                history.extend(cast(ResponseInputParam, response.output))
-                history.extend(
-                    {
-                        "type": "function_call_output",
-                        "call_id": call.call_id,
-                        "output": json.dumps(tool_result, ensure_ascii=False),
-                    }
-                    for call, tool_result in zip(tool_calls, tool_results, strict=True)
-                )
+            if len(user_turn_starts) > 1:
+                del history[: user_turn_starts[1]]
+                trimmed = True
+                continue
 
-            if not tool_calls:
-                return
-        print(f"\nTurn limit reached ({settings.max_turns}).")
-    except KeyboardInterrupt:
-        print("\n[Interrupted; returning to prompt]")
-    finally:
-        # A request that ended before any step completed leaves no trace.
-        if history and history[-1] is user_message:
-            history.pop()
-        if context_tokens:
-            cached = f", {cached_tokens:,} cached" if cached_tokens else ""
-            print(
-                f"[Context: {context_tokens:,} of "
-                f"{settings.max_history_tokens:,} tokens{cached}; "
-                f"output: {output_tokens:,} tokens]"
+            # Only the current request is left: free space by omitting its oldest
+            # tool outputs.
+            oldest_output = next(
+                (
+                    item
+                    for item in history
+                    if isinstance(item, dict)
+                    and item.get("type") == "function_call_output"
+                    and item.get("output") != omitted
+                ),
+                None,
             )
+            if oldest_output is None:
+                break  # nothing left that can be dropped
+            cast(dict[str, Any], oldest_output)["output"] = omitted
+            trimmed = True
+
+        # The request itself is over the limit: give up on it.
+        if json_bytes(history) > max_bytes and any(
+            isinstance(item, dict) and item.get("role") == "user" for item in history
+        ):
+            replacement: ResponseInputParam = [
+                {
+                    "role": "user",
+                    "content": "[Previous request omitted because its history exceeded the context budget.]",
+                }
+            ]
+            history[:] = replacement if json_bytes(replacement) <= max_bytes else []
+            return True, True
+        return trimmed, False
 
 
-def main() -> None:
-    """Run the interactive REPL for the coding agent."""
-    settings = get_config()
-    conversation = Conversation()
-    tool_schemas = build_tool_schemas()
+class TurnError(Exception):
+    """A turn that ended without a final answer; completed steps stay in the history."""
 
-    client = OpenAI(
-        api_key=settings.api_key,
-        base_url=settings.base_url,
-    )
 
-    print(
-        f"AI coding agent started | model: {settings.model} | "
-        f"workspace: {settings.workspace_root}\n"
-        "Type 'exit' or 'quit' to stop, '/clear' to start a new conversation.\n"
-    )
+@dataclass
+class Usage:
+    """Token counts for a turn, as the model reported them."""
 
-    while True:
-        try:
-            prompt = input("> ")
-        except KeyboardInterrupt, EOFError:
-            break
+    context_tokens: int = 0  # input tokens of the turn's last request
+    cached_tokens: int = 0  # the part of context_tokens the provider had cached
+    output_tokens: int = 0  # summed over every request in the turn
 
-        if not prompt:
-            continue
 
-        if prompt.strip().lower() in {"exit", "quit"}:
-            break
+class Agent:
+    """Runs the tool loop for each user turn. Prints nothing itself."""
 
-        if prompt.strip().lower() == "/clear":
-            conversation.history.clear()
-            print("[Conversation cleared]\n")
-            continue
+    def __init__(self, config: Config, client: OpenAI | None = None) -> None:
+        self.config = config
+        self.client = client or OpenAI(
+            api_key=config.api_key,
+            base_url=config.base_url,
+        )
+        self.conversation = Conversation()
+        self.toolbox = Toolbox.for_config(config)
+        self.usage = Usage()
 
-        # Built per turn so the date stays right in a long-running session.
-        instructions = (
+    def instructions(self) -> str:
+        """The system prompt plus details of the environment, which are kept
+        last so the start of the prompt stays the same for the provider's cache."""
+        return (
             f"{system_prompt}\n"
             "Environment:\n"
-            f"- Workspace root: {settings.workspace_root}\n"
+            f"- Workspace root: {self.config.workspace_root}\n"
             f"- Operating system: {platform.platform()}\n"
             f"- Current date: {date.today().isoformat()}\n"
         )
+
+    def run_turn(
+        self,
+        prompt: str,
+        on_text: Callable[[str], None] = lambda text: None,
+        on_notice: Callable[[str], None] = lambda text: None,
+    ) -> None:
+        """Run one user turn, handling function calls until the model gives a
+        final answer.
+
+        on_text receives the model's text as it arrives; each response's text
+        ends with a newline. on_notice receives status messages. A turn that
+        ends before any step completed leaves no trace in the history.
+
+        Raises:
+            TurnError: If the turn ends without a final answer.
+            KeyboardInterrupt: After recording interrupted tool calls, so the
+                history stays valid.
+        """
+        config = self.config
+        conversation = self.conversation
+        # Built per turn so the date stays right in a long-running session.
+        instructions = self.instructions()
+        tool_schemas = self.toolbox.schemas()
+        # Instructions and tool schemas go out with every request, so they count
+        # against the token limit as well.
+        overhead_bytes = len(instructions.encode("utf-8")) + json_bytes(tool_schemas)
+        # Left out unless configured, so endpoints without reasoning are unaffected.
+        reasoning: Reasoning | Omit = (
+            {"effort": config.reasoning_effort} if config.reasoning_effort else omit
+        )
+        self.usage = Usage()
+        prompt_message = conversation.add_prompt(prompt)
+
         try:
-            run_turn(client, conversation, prompt, tool_schemas, instructions)
+            for _ in range(config.max_turns):
+                max_bytes = (
+                    int(config.max_history_tokens / conversation.tokens_per_byte)
+                    - overhead_bytes
+                )
+                before = list(conversation.history)
+                trimmed, current_turn_dropped = conversation.trim(max_bytes)
+                # Whole turns are only ever removed from the front.
+                dropped = (
+                    []
+                    if current_turn_dropped
+                    else before[: len(before) - len(conversation.history)]
+                )
+                if dropped and config.summarize:
+                    self._summarize(
+                        dropped,
+                        max_bytes,
+                        instructions,
+                        tool_schemas,
+                        reasoning,
+                        on_notice,
+                    )
+                elif trimmed:
+                    on_notice(
+                        "Conversation history trimmed to fit "
+                        f"{config.max_history_tokens} tokens"
+                    )
+                if current_turn_dropped:
+                    raise TurnError(
+                        "Turn stopped because its history exceeded the context budget"
+                    )
+
+                request_bytes = overhead_bytes + json_bytes(conversation.history)
+                response = self._create_response(
+                    instructions, tool_schemas, reasoning, on_text, on_notice
+                )
+                self._record_usage(response, request_bytes)
+                self._check_status(response)
+
+                tool_calls = [
+                    item
+                    for item in response.output
+                    if isinstance(item, ResponseFunctionToolCall)
+                ]
+                results: list[dict[str, Any]] = []
+                try:
+                    for call in tool_calls:
+                        results.append(self.toolbox.execute(call))
+                finally:
+                    # Record the step even when Ctrl-C interrupts a tool.
+                    conversation.add_step(response.output, tool_calls, results)
+
+                if not tool_calls:
+                    return
+            raise TurnError(f"Turn limit reached ({config.max_turns})")
+        finally:
+            conversation.discard_unanswered(prompt_message)
+
+    def _create_response(
+        self,
+        instructions: str,
+        tool_schemas: list[ToolParam],
+        reasoning: Reasoning | Omit,
+        on_text: Callable[[str], None],
+        on_notice: Callable[[str], None],
+    ) -> Response:
+        """Request one model response, passing its text to on_text."""
+        if not self.config.streaming:
+            response = self.client.responses.create(
+                model=self.config.model,
+                instructions=instructions,
+                input=self.conversation.history,
+                tools=tool_schemas,
+                reasoning=reasoning,
+                store=False,
+            )
+            if response.output_text:
+                on_text(response.output_text + "\n")
+            return response
+
+        with self.client.responses.stream(
+            model=self.config.model,
+            instructions=instructions,
+            input=self.conversation.history,
+            tools=tool_schemas,
+            reasoning=reasoning,
+            store=False,
+        ) as stream:
+            unfinished = None
+            for event in stream:
+                if event.type == "response.output_text.delta":
+                    on_text(event.delta)
+                elif (
+                    event.type == "response.output_item.added"
+                    and event.item.type == "reasoning"
+                ):
+                    on_notice("thinking…")
+                elif (
+                    event.type == "response.incomplete"
+                    or event.type == "response.failed"
+                ):
+                    # get_final_response() only knows completed responses.
+                    unfinished = event.response
+            response = unfinished or stream.get_final_response()
+        if response.output_text:
+            on_text("\n")
+        return response
+
+    def _record_usage(self, response: Response, request_bytes: int) -> None:
+        """Add the response's token counts to the turn's, and learn from them."""
+        usage = response.usage
+        if not usage:
+            return
+        self.usage.output_tokens += usage.output_tokens
+        if usage.input_tokens:
+            self.usage.context_tokens = usage.input_tokens
+            # Cached tokens are part of input_tokens: they cost less but still
+            # fill the context window, so the limit counts them.
+            details = usage.input_tokens_details
+            self.usage.cached_tokens = details.cached_tokens if details else 0
+            # Learn this model's tokens per byte from what it just counted; the
+            # bounds guard against an endpoint reporting nonsense.
+            self.conversation.tokens_per_byte = min(
+                1.0, max(0.1, usage.input_tokens / request_bytes)
+            )
+
+    @staticmethod
+    def _check_status(response: Response) -> None:
+        """Raise TurnError for a response that stopped early or failed."""
+        if response.status == "incomplete":
+            details = response.incomplete_details
+            reason = details.reason if details else "unknown"
+            raise TurnError(f"Response incomplete: {reason}")
+        if response.status == "failed":
+            message = response.error.message if response.error else "unknown error"
+            raise TurnError(f"Response failed: {message}")
+
+    def _summarize(
+        self,
+        dropped: ResponseInputParam,
+        max_bytes: int,
+        instructions: str,
+        tool_schemas: list[ToolParam],
+        reasoning: Reasoning | Omit,
+        on_notice: Callable[[str], None],
+    ) -> None:
+        """Put a model-written summary of the dropped turns at the start of history."""
+        history = self.conversation.history
+        on_notice("Summarising earlier conversation to save space…")
+        try:
+            # The same instructions, tools and reasoning setting as every other
+            # request: the dropped items were the start of the previous prompt,
+            # so the provider has nearly all of this one cached.
+            reply = self.client.responses.create(
+                model=self.config.model,
+                instructions=instructions,
+                input=[*dropped, {"role": "user", "content": SUMMARY_REQUEST}],
+                tools=tool_schemas,
+                tool_choice="none",
+                reasoning=reasoning,
+                store=False,
+            )
+        except KeyboardInterrupt:
+            history[:0] = dropped
+            raise
+        except OpenAIError as exc:
+            on_notice(f"No summary ({type(exc).__name__}); it was dropped instead")
+            return
+
+        if reply.usage:
+            self.usage.output_tokens += reply.usage.output_tokens
+        summary = reply.output_text.strip()
+        summary_message: EasyInputMessageParam = {
+            "role": "user",
+            "content": "[Summary of the earlier conversation, which was removed "
+            f"to save space]\n{summary}",
+        }
+        if summary and json_bytes([summary_message, *history]) <= max_bytes:
+            history.insert(0, summary_message)
+
+
+class Repl:
+    """The interactive terminal: reads prompts and prints what the agent says."""
+
+    def __init__(self, agent: Agent) -> None:
+        self.agent = agent
+        self.at_line_start = True
+
+    def run(self) -> None:
+        """Read and handle prompts until the user quits."""
+        config = self.agent.config
+        print(
+            f"AI coding agent started | model: {config.model} | "
+            f"workspace: {config.workspace_root}\n"
+            "Type 'exit' or 'quit' to stop, '/clear' to start a new conversation.\n"
+        )
+
+        while True:
+            try:
+                prompt = input("> ")
+            except KeyboardInterrupt, EOFError:
+                break
+
+            if not prompt:
+                continue
+
+            command = prompt.strip().lower()
+            if command in {"exit", "quit"}:
+                break
+            if command == "/clear":
+                self.agent.conversation.clear()
+                print("[Conversation cleared]\n")
+                continue
+
+            self.ask(prompt)
+
+        print("\nGoodbye!")
+
+    def ask(self, prompt: str) -> None:
+        """Run one turn, printing its text as it arrives and reporting problems
+        without leaving the loop."""
+        try:
+            self.agent.run_turn(prompt, on_text=self.write, on_notice=self.notice)
+        except TurnError as exc:
+            self.notice(str(exc))
+        except KeyboardInterrupt:
+            self.notice("Interrupted; returning to prompt")
         except Exception as exc:  # noqa: BLE001
-            print(f"Agent error: {type(exc).__name__}: {exc}")
+            self.notice(f"Agent error: {type(exc).__name__}: {exc}")
+
+        usage = self.agent.usage
+        if usage.context_tokens:
+            cached = f", {usage.cached_tokens:,} cached" if usage.cached_tokens else ""
+            self.notice(
+                f"Context: {usage.context_tokens:,} of "
+                f"{self.agent.config.max_history_tokens:,} tokens{cached}; "
+                f"output: {usage.output_tokens:,} tokens"
+            )
         print()
 
-    print("\nGoodbye!")
+    def write(self, text: str) -> None:
+        """Print model text, remembering whether the cursor is at a line start."""
+        print(text, end="", flush=True)
+        if text:
+            self.at_line_start = text.endswith("\n")
+
+    def notice(self, text: str) -> None:
+        """Print a bracketed status line, starting a new line if needed."""
+        if not self.at_line_start:
+            self.write("\n")
+        print(f"[{text}]")
+
+
+def main() -> None:
+    """Load the configuration and run the terminal loop."""
+    Repl(Agent(load_config())).run()
 
 
 if __name__ == "__main__":

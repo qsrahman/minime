@@ -14,6 +14,8 @@ import httpx2
 import openai
 import pytest
 from conftest import (
+    OMITTED_TOOL_OUTPUT,
+    SUMMARY_MARKER,
     Api,
     call_item,
     kinds,
@@ -45,28 +47,41 @@ def run(
     api: Api,
     history: list[Any] | None = None,
     prompt: str = "new",
-    instructions: str = "",
     conversation: main.Conversation | None = None,
 ) -> main.Conversation:
-    conversation = conversation or main.Conversation(history=history or [])
-    main.run_turn(
-        api.client, conversation, prompt, tools.build_tool_schemas(), instructions
-    )
-    return conversation
+    """One turn as the terminal runs it: text and notices are printed, problems
+    are reported rather than raised, and a blank line follows."""
+    agent = api.agent(conversation or main.Conversation(history=history or []))
+    main.Repl(agent).ask(prompt)
+    return agent.conversation
+
+
+def turn(
+    api: Api,
+    history: list[Any] | None = None,
+    prompt: str = "new",
+    conversation: main.Conversation | None = None,
+) -> main.Conversation:
+    """One turn through Agent.run_turn itself, so problems are raised."""
+    agent = api.agent(conversation or main.Conversation(history=history or []))
+    repl = main.Repl(agent)
+    agent.run_turn(prompt, on_text=repl.write, on_notice=repl.notice)
+    return agent.conversation
 
 
 def old_history() -> list[Any]:
     return [{"role": "user", "content": "old"}]
 
 
-def overhead() -> int:
-    """Bytes of tool schemas sent with every request (instructions are extra)."""
-    return main.json_bytes(tools.build_tool_schemas())
+def overhead(settings: config.Config) -> int:
+    """Bytes sent with every request besides the history: instructions and tools."""
+    agent = Api(settings).agent()
+    return len(agent.instructions().encode()) + main.json_bytes(agent.toolbox.schemas())
 
 
-def tokens_for(history_bytes: int, instructions: str = "") -> int:
+def tokens_for(settings: config.Config, history_bytes: int) -> int:
     """The token limit that leaves room for this many bytes of history at the default ratio."""
-    return (overhead() + len(instructions) + history_bytes + 3) // 4
+    return (overhead(settings) + history_bytes + 3) // 4
 
 
 @pytest.fixture(params=[False, True], ids=["create", "stream"])
@@ -81,22 +96,26 @@ class TestRequests:
     ) -> None:
         settings.model = "some-model"
         api.replies = [answer()]
-        run(api, prompt="hi", instructions="Be brief.")
+        run(api, prompt="hi")
 
         body = api.requests[0]
         assert body["model"] == "some-model"
-        assert body["instructions"] == "Be brief."
+        assert body["instructions"] == Api(settings).agent().instructions()
         assert body["store"] is False
         assert body.get("stream", False) is streaming
         assert body["input"] == [{"role": "user", "content": "hi"}]
-        assert [tool["name"] for tool in body["tools"]] == list(tools.TOOLS)[:-1]
+        assert [tool["name"] for tool in body["tools"]] == list(
+            tools.Toolbox.for_config(settings).tools
+        )
         assert all(tool["strict"] is True for tool in body["tools"])
         assert "reasoning" not in body
 
     def test_instructions_are_sent_with_every_request(self, api: Api) -> None:
         api.replies = [response_body(write("a")), answer()]
-        run(api, instructions="Be brief.")
-        assert [body["instructions"] for body in api.requests] == ["Be brief."] * 2
+        run(api)
+        first, second = (body["instructions"] for body in api.requests)
+        assert first.startswith(main.system_prompt)
+        assert second == first
 
     @pytest.mark.parametrize("effort", ["low", "high"])
     def test_reasoning_effort_is_sent_when_configured(
@@ -116,14 +135,14 @@ class TestAnswers:
         conversation = run(api, old_history())
         assert kinds(conversation.history) == ["user:old", "user:new", "message"]
         assert conversation.history[2].content[0].text == "the answer"
-        assert capsys.readouterr().out == "the answer\n"
+        assert capsys.readouterr().out == "the answer\n\n"
 
     def test_text_alongside_tool_calls_is_printed(
         self, api: Api, streaming: bool, capsys: pytest.CaptureFixture[str]
     ) -> None:
         api.replies = [response_body(message_item("checking"), write("a")), answer()]
         run(api)
-        assert capsys.readouterr().out == "checking\ndone\n"
+        assert capsys.readouterr().out == "checking\ndone\n\n"
 
     def test_empty_response_leaves_no_trace(
         self, api: Api, streaming: bool, capsys: pytest.CaptureFixture[str]
@@ -131,7 +150,7 @@ class TestAnswers:
         api.replies = [response_body()]
         conversation = run(api, old_history())
         assert kinds(conversation.history) == ["user:old"]
-        assert capsys.readouterr().out == ""
+        assert capsys.readouterr().out == "\n"
 
     def test_earlier_answers_are_replayed_on_the_next_turn(
         self, api: Api, streaming: bool
@@ -160,7 +179,7 @@ class TestAnswers:
         api.replies = [answer("partial", status="incomplete", reason=reason)]
         conversation = run(api, old_history())
         assert kinds(conversation.history) == ["user:old"]
-        assert capsys.readouterr().out == f"partial\n[Response incomplete: {shown}]\n"
+        assert capsys.readouterr().out == f"partial\n[Response incomplete: {shown}]\n\n"
 
     def test_incomplete_response_after_a_tool_step_keeps_the_step(
         self, api: Api
@@ -299,7 +318,7 @@ class TestToolCalls:
             "call:b",
             "output:b:ok",
         ]
-        assert "Turn limit reached (2)." in capsys.readouterr().out
+        assert "[Turn limit reached (2)]" in capsys.readouterr().out
 
     def test_answer_on_the_last_allowed_turn_is_not_a_limit(
         self,
@@ -341,12 +360,10 @@ class TestInterruptsAndErrors:
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        def interrupted(**kwargs: Any) -> dict[str, Any]:
+        def interrupted(self: tools.RunCommandTool, args: Any) -> dict[str, Any]:
             raise KeyboardInterrupt
 
-        monkeypatch.setitem(
-            tools.TOOLS, "run_command", (interrupted, tools.RunCommandArguments)
-        )
+        monkeypatch.setattr(tools.RunCommandTool, "run", interrupted)
         sleep = call_item("run_command", "b", cmd="sleep 60", timeout=None, cwd=None)
         api.replies = [response_body(write("a"), sleep, write("c")), answer("never")]
         conversation = run(api, old_history())
@@ -391,7 +408,7 @@ class TestInterruptsAndErrors:
         api.replies = [httpx2.Response(status, json={"error": {"message": "nope"}})]
         conversation = main.Conversation(history=old_history())
         with pytest.raises(error, match="nope"):
-            run(api, conversation=conversation)
+            turn(api, conversation=conversation)
         assert kinds(conversation.history) == ["user:old"]
 
     def test_api_error_after_a_step_keeps_the_step(self, api: Api) -> None:
@@ -401,7 +418,7 @@ class TestInterruptsAndErrors:
         ]
         conversation = main.Conversation(history=old_history())
         with pytest.raises(openai.InternalServerError, match="boom"):
-            run(api, conversation=conversation)
+            turn(api, conversation=conversation)
         assert kinds(conversation.history) == [
             "user:old",
             "user:new",
@@ -421,6 +438,7 @@ class TestInterruptsAndErrors:
         ]
         inputs = iter(["first", "second", "exit"])
         monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
+        monkeypatch.setattr(main, "load_config", lambda: api.settings)
         monkeypatch.setattr(main, "OpenAI", lambda **kwargs: api.client)
         main.main()
 
@@ -447,7 +465,7 @@ class TestTokenBudget:
         run(api)
         assert (
             capsys.readouterr().out
-            == "ok\n[Context: 12,345 of 64,000 tokens; output: 7 tokens]\n"
+            == "ok\n[Context: 12,345 of 64,000 tokens; output: 7 tokens]\n\n"
         )
 
     def test_cached_tokens_are_reported(
@@ -457,14 +475,16 @@ class TestTokenBudget:
         run(api)
         assert (
             capsys.readouterr().out
-            == "ok\n[Context: 5,805 of 200,000 tokens, 4,608 cached; output: 7 tokens]\n"
+            == "ok\n[Context: 5,805 of 200,000 tokens, 4,608 cached; output: 7 tokens]\n\n"
         )
 
-    def test_cached_tokens_do_not_reduce_the_context_count(self, api: Api) -> None:
+    def test_cached_tokens_do_not_reduce_the_context_count(
+        self, api: Api, settings: config.Config
+    ) -> None:
         """They are a subset of input_tokens and still fill the context window."""
         api.replies = [answer(input_tokens=2000, cached_tokens=1900)]
         conversation = run(api, prompt="p" * 900)
-        request_bytes = overhead() + main.json_bytes(api.requests[0]["input"])
+        request_bytes = overhead(settings) + main.json_bytes(api.requests[0]["input"])
         assert conversation.tokens_per_byte == pytest.approx(2000 / request_bytes)
 
     def test_the_last_request_of_the_turn_is_the_one_reported(
@@ -497,14 +517,11 @@ class TestTokenBudget:
         assert main.Conversation().tokens_per_byte == 0.25
 
     def test_ratio_is_learned_from_reported_usage(
-        self, api: Api, streaming: bool
+        self, api: Api, streaming: bool, settings: config.Config
     ) -> None:
-        instructions = "i" * 60
         api.replies = [answer(input_tokens=2000)]
-        conversation = run(api, prompt="p" * 900, instructions=instructions)
-        request_bytes = (
-            len(instructions) + overhead() + main.json_bytes(api.requests[0]["input"])
-        )
+        conversation = run(api, prompt="p" * 900)
+        request_bytes = overhead(settings) + main.json_bytes(api.requests[0]["input"])
         assert conversation.tokens_per_byte == pytest.approx(2000 / request_bytes)
         assert 0.1 < conversation.tokens_per_byte < 1.0
 
@@ -524,7 +541,7 @@ class TestTokenBudget:
     def test_old_turns_are_dropped_to_fit(
         self, api: Api, settings: config.Config
     ) -> None:
-        settings.max_history_tokens = tokens_for(1000)
+        settings.max_history_tokens = tokens_for(settings, 1000)
         history = [{"role": "user", "content": "o" * 2000}]
         api.replies = [answer(""), answer("ok")]  # no summary text, then the answer
         conversation = run(api, history)
@@ -556,7 +573,7 @@ class TestTokenBudget:
         self, api: Api, settings: config.Config, workspace: Path
     ) -> None:
         (workspace / "big.txt").write_text("x" * 6000)
-        settings.max_history_tokens = tokens_for(16_000)
+        settings.max_history_tokens = tokens_for(settings, 16_000)
         api.replies = [
             *(response_body(read(f"r{i}", "big.txt")) for i in range(3)),
             answer(),
@@ -568,11 +585,11 @@ class TestTokenBudget:
             for item in conversation.history
             if isinstance(item, dict) and "output" in item
         ]
-        assert outputs[0] == main.OMITTED_TOOL_OUTPUT
-        assert outputs[-1] != main.OMITTED_TOOL_OUTPUT
+        assert outputs[0] == OMITTED_TOOL_OUTPUT
+        assert outputs[-1] != OMITTED_TOOL_OUTPUT
         # The request that followed the third read went out with the first omitted.
         sent = [item for item in api.requests[3]["input"] if "output" in item]
-        assert sent[0]["output"] == main.OMITTED_TOOL_OUTPUT
+        assert sent[0]["output"] == OMITTED_TOOL_OUTPUT
         assert len(sent[2]["output"]) > 6000
 
     def test_oversized_prompt_stops_the_turn(
@@ -581,7 +598,7 @@ class TestTokenBudget:
         settings: config.Config,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        settings.max_history_tokens = tokens_for(500)
+        settings.max_history_tokens = tokens_for(settings, 500)
         api.replies = [answer("never reached")]
         conversation = run(api, prompt="p" * 5000)
         assert api.requests == []
@@ -598,7 +615,7 @@ class TestTokenBudget:
     ) -> None:
         """The same history fits at 4 bytes per token but not at 1 byte per token."""
         (workspace / "big.txt").write_text("x" * 6000)
-        settings.max_history_tokens = overhead() + 3000
+        settings.max_history_tokens = overhead(settings) + 3000
 
         def second_request_output(tokens_per_byte: float) -> str:
             api.requests.clear()
@@ -606,31 +623,39 @@ class TestTokenBudget:
             run(api, conversation=main.Conversation(tokens_per_byte=tokens_per_byte))
             return api.requests[1]["input"][2]["output"]
 
-        assert second_request_output(0.25) != main.OMITTED_TOOL_OUTPUT
-        assert second_request_output(1.0) == main.OMITTED_TOOL_OUTPUT
+        assert second_request_output(0.25) != OMITTED_TOOL_OUTPUT
+        assert second_request_output(1.0) == OMITTED_TOOL_OUTPUT
 
     def test_instructions_and_tools_count_against_the_limit(
-        self, api: Api, settings: config.Config
+        self, api: Api, settings: config.Config, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        instructions = "i" * 3000
         new_message = [{"role": "user", "content": "new"}]
         # Room for the new message and a few bytes more, but not for "old" too.
         settings.max_history_tokens = tokens_for(
-            main.json_bytes(new_message) + 5, instructions
+            settings, main.json_bytes(new_message) + 5
         )
-        api.replies = [answer(""), answer(), answer()]
-        run(api, old_history(), instructions=instructions)
+        # "old" is dropped (and an empty summary of it discarded).
+        api.replies = [answer(""), answer()]
+        run(api, old_history())
         assert kinds(api.requests[1]["input"]) == ["user:new"]
 
-        # Without the instructions the same history fits untouched.
+        # With 3000 bytes more room the same history fits untouched...
+        settings.max_history_tokens += 3000 // 4
+        api.replies = [answer()]
         run(api, old_history())
         assert kinds(api.requests[2]["input"]) == ["user:old", "user:new"]
+
+        # ...until a 3000-byte longer system prompt takes that room back.
+        monkeypatch.setattr(main, "system_prompt", main.system_prompt + "i" * 3000)
+        api.replies = [answer(""), answer()]
+        run(api, old_history())
+        assert kinds(api.requests[4]["input"]) == ["user:new"]
 
     def test_learned_ratio_carries_into_the_next_turn(
         self, api: Api, settings: config.Config
     ) -> None:
         # Room for 2000 bytes of history at 1 token per byte, far more at the default.
-        settings.max_history_tokens = overhead() + 2000
+        settings.max_history_tokens = overhead(settings) + 2000
         api.replies = [answer("a" * 10, input_tokens=10_000_000), answer(""), answer()]
         conversation = run(api, prompt="p" * 1900)
         assert conversation.tokens_per_byte == 1.0
@@ -649,7 +674,7 @@ class TestSummaries:
     def limit(self, settings: config.Config) -> None:
         # Room for about 5000 bytes: two big() messages plus a prompt do not fit,
         # so the first is dropped, leaving space for a short summary.
-        settings.max_history_tokens = tokens_for(5000)
+        settings.max_history_tokens = tokens_for(settings, 5000)
 
     def test_dropped_turns_are_replaced_by_a_summary(
         self, api: Api, streaming: bool, capsys: pytest.CaptureFixture[str]
@@ -657,7 +682,7 @@ class TestSummaries:
         api.replies = [answer("Earlier: the user sent aaa."), answer("ok")]
         conversation = run(api, [big("a"), big("b")])
 
-        summary = f"{main.SUMMARY_MARKER}\nEarlier: the user sent aaa."
+        summary = f"{SUMMARY_MARKER}\nEarlier: the user sent aaa."
         expected = [f"user:{summary}", f"user:{'b' * 3000}", "user:new"]
         assert kinds(api.requests[1]["input"]) == expected
         assert kinds(conversation.history) == [*expected, "message"]
@@ -668,7 +693,7 @@ class TestSummaries:
 
     def test_summary_request(self, api: Api, streaming: bool) -> None:
         api.replies = [answer("summary"), answer("ok")]
-        run(api, [big("a"), big("b")], instructions="Be brief.")
+        run(api, [big("a"), big("b")])
 
         request, following = api.requests
         # Exactly what was dropped, followed by the request to summarise it.
@@ -718,13 +743,13 @@ class TestSummaries:
         run(api, prompt="c" * 3000, conversation=conversation)
 
         second_request = api.requests[2]["input"]
-        assert second_request[0]["content"] == f"{main.SUMMARY_MARKER}\nfirst summary"
+        assert second_request[0]["content"] == f"{SUMMARY_MARKER}\nfirst summary"
         assert second_request[-1]["content"] == main.SUMMARY_REQUEST
         contents = [
             item["content"] for item in conversation.history if isinstance(item, dict)
         ]
-        assert contents[0] == f"{main.SUMMARY_MARKER}\nsecond summary"
-        assert sum(main.SUMMARY_MARKER in content for content in contents) == 1
+        assert contents[0] == f"{SUMMARY_MARKER}\nsecond summary"
+        assert sum(SUMMARY_MARKER in content for content in contents) == 1
 
     def test_summary_output_tokens_are_counted(
         self, api: Api, capsys: pytest.CaptureFixture[str]
@@ -798,7 +823,7 @@ class TestSummaries:
         out = capsys.readouterr().out
         assert "Summarising" not in out
         assert "[Conversation history trimmed to fit" in out
-        assert api.requests[2]["input"][2]["output"] == main.OMITTED_TOOL_OUTPUT
+        assert api.requests[2]["input"][2]["output"] == OMITTED_TOOL_OUTPUT
 
 
 class TestFailedResponses:
@@ -809,7 +834,7 @@ class TestFailedResponses:
         conversation = run(api, old_history())
         assert kinds(conversation.history) == ["user:old"]
         assert (
-            capsys.readouterr().out == "[Response failed: The model is overloaded.]\n"
+            capsys.readouterr().out == "[Response failed: The model is overloaded.]\n\n"
         )
 
     def test_failed_response_without_details(
@@ -840,7 +865,7 @@ class TestThinking:
         settings.streaming = True
         api.replies = [response_body(reasoning_item(), message_item("the answer"))]
         run(api)
-        assert capsys.readouterr().out == "[thinking…]\nthe answer\n"
+        assert capsys.readouterr().out == "[thinking…]\nthe answer\n\n"
 
     def test_each_reasoning_request_is_announced(
         self, api: Api, settings: config.Config, capsys: pytest.CaptureFixture[str]
@@ -851,7 +876,7 @@ class TestThinking:
             response_body(reasoning_item("rs_2"), message_item("done")),
         ]
         run(api)
-        assert capsys.readouterr().out == "[thinking…]\n[thinking…]\ndone\n"
+        assert capsys.readouterr().out == "[thinking…]\n[thinking…]\ndone\n\n"
 
     def test_nothing_is_announced_without_reasoning(
         self, api: Api, streaming: bool, capsys: pytest.CaptureFixture[str]
@@ -866,7 +891,7 @@ class TestThinking:
         settings.streaming = False
         api.replies = [response_body(reasoning_item(), message_item("the answer"))]
         run(api)
-        assert capsys.readouterr().out == "the answer\n"
+        assert capsys.readouterr().out == "the answer\n\n"
 
 
 def test_system_prompt_has_no_stray_escape_characters() -> None:
@@ -875,16 +900,58 @@ def test_system_prompt_has_no_stray_escape_characters() -> None:
     assert [c for c in main.system_prompt if ord(c) < 32 and c != "\n"] == []
 
 
-class TestMain:
+class TestInstructions:
+    def test_environment_is_described(self, settings: config.Config) -> None:
+        instructions = Api(settings).agent().instructions()
+        assert instructions.startswith(main.system_prompt)
+        assert f"- Workspace root: {settings.workspace_root}" in instructions
+        assert f"- Current date: {date.today().isoformat()}" in instructions
+        assert "- Operating system: " in instructions
+        assert "untrusted data" in instructions
+
+    def test_braces_in_the_system_prompt_are_sent_as_written(
+        self, settings: config.Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            main, "system_prompt", 'Reply with JSON like {"ok": true}.\n'
+        )
+        assert (
+            Api(settings)
+            .agent()
+            .instructions()
+            .startswith('Reply with JSON like {"ok": true}.\n\nEnvironment:\n')
+        )
+
+    def test_date_is_refreshed_every_turn(
+        self, api: Api, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        days = iter([date(2026, 10, 13), date(2026, 10, 14)])
+
+        class Calendar:
+            @staticmethod
+            def today() -> date:
+                return next(days)
+
+        monkeypatch.setattr(main, "date", Calendar)
+        api.replies = [answer(), answer()]
+        agent = api.agent()
+        agent.run_turn("before midnight")
+        agent.run_turn("after midnight")
+        assert "- Current date: 2026-10-13\n" in api.requests[0]["instructions"]
+        assert "- Current date: 2026-10-14\n" in api.requests[1]["instructions"]
+
+
+class TestRepl:
     @pytest.fixture
-    def repl(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    def repl(
+        self, settings: config.Config, monkeypatch: pytest.MonkeyPatch
+    ) -> dict[str, Any]:
         """Run main() with scripted input, a fake OpenAI client and a recorded run_turn."""
         state: dict[str, Any] = {
             "inputs": [],
             "prompts": [],
+            "agents": [],
             "client_kwargs": None,
-            "turn": None,
-            "instructions": None,
         }
 
         def fake_input(prompt: str) -> str:
@@ -897,22 +964,19 @@ class TestMain:
             state["client_kwargs"] = kwargs
             return "client"
 
-        def fake_run_turn(
-            client: Any,
-            conversation: main.Conversation,
-            prompt: str,
-            tool_schemas: Any,
-            instructions: str,
-        ) -> None:
+        def fake_run_turn(agent: main.Agent, prompt: str, **callbacks: Any) -> None:
             state["prompts"].append(prompt)
-            state["turn"] = (client, conversation, tool_schemas)
-            state["instructions"] = instructions
+            state["agents"].append(agent)
+            agent.conversation.history.append({"role": "user", "content": prompt})
             if prompt == "explode":
                 raise RuntimeError("boom")
+            if prompt == "learn":
+                agent.conversation.tokens_per_byte = 0.5
 
         monkeypatch.setattr("builtins.input", fake_input)
+        monkeypatch.setattr(main, "load_config", lambda: settings)
         monkeypatch.setattr(main, "OpenAI", fake_openai)
-        monkeypatch.setattr(main, "run_turn", fake_run_turn)
+        monkeypatch.setattr(main.Agent, "run_turn", fake_run_turn)
         return state
 
     def test_banner_and_client_settings(
@@ -927,59 +991,12 @@ class TestMain:
         main.main()
         out = capsys.readouterr().out
         assert f"model: banner-model | workspace: {settings.workspace_root}" in out
+        assert "'/clear' to start a new conversation" in out
         assert out.endswith("\nGoodbye!\n")
         assert repl["client_kwargs"] == {
             "api_key": "test-key",
             "base_url": "http://localhost:9/v1",
         }
-
-    def test_instructions_describe_the_environment(
-        self, repl: dict[str, Any], settings: config.Config
-    ) -> None:
-        repl["inputs"] = ["hello", "exit"]
-        main.main()
-        instructions = repl["instructions"]
-        assert instructions.startswith(main.system_prompt)
-        assert f"- Workspace root: {settings.workspace_root}" in instructions
-        assert f"- Current date: {date.today().isoformat()}" in instructions
-        assert "- Operating system: " in instructions
-        assert "untrusted data" in instructions
-
-    def test_braces_in_the_system_prompt_are_sent_as_written(
-        self, repl: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(
-            main, "system_prompt", 'Reply with JSON like {"ok": true}.\n'
-        )
-        repl["inputs"] = ["hello", "exit"]
-        main.main()
-        assert repl["instructions"].startswith(
-            'Reply with JSON like {"ok": true}.\n\nEnvironment:\n'
-        )
-
-    def test_date_is_refreshed_every_turn(
-        self, repl: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        days = iter([date(2026, 10, 13), date(2026, 10, 14)])
-
-        class Calendar:
-            @staticmethod
-            def today() -> date:
-                return next(days)
-
-        seen: list[str] = []
-        monkeypatch.setattr(main, "date", Calendar)
-        monkeypatch.setattr(
-            main,
-            "run_turn",
-            lambda client, conversation, prompt, schemas, instructions: seen.append(
-                instructions
-            ),
-        )
-        repl["inputs"] = ["before midnight", "after midnight", "exit"]
-        main.main()
-        assert "- Current date: 2026-10-13\n" in seen[0]
-        assert "- Current date: 2026-10-14\n" in seen[1]
 
     @pytest.mark.parametrize("word", ["exit", "quit", "EXIT", "  Quit  "])
     def test_exit_words(self, repl: dict[str, Any], word: str) -> None:
@@ -999,14 +1016,24 @@ class TestMain:
         main.main()
         assert capsys.readouterr().out.count("Goodbye!") == 1
 
-    def test_prompts_are_passed_to_run_turn(self, repl: dict[str, Any]) -> None:
+    def test_prompts_are_passed_on_and_blank_lines_skipped(
+        self, repl: dict[str, Any]
+    ) -> None:
         repl["inputs"] = ["first", "", "second", "exit"]
         main.main()
         assert repl["prompts"] == ["first", "second"]
-        client, conversation, tool_schemas = repl["turn"]
-        assert client == "client"
-        assert conversation == main.Conversation()
-        assert [schema["name"] for schema in tool_schemas] == list(tools.TOOLS)[:-1]
+        agent = repl["agents"][0]
+        assert agent.client == "client"
+        assert list(agent.toolbox.tools) == list(
+            tools.Toolbox.for_config(agent.config).tools
+        )
+
+    def test_one_agent_serves_every_turn(self, repl: dict[str, Any]) -> None:
+        repl["inputs"] = ["a", "b", "exit"]
+        main.main()
+        first, second = repl["agents"]
+        assert first is second
+        assert kinds(first.conversation.history) == ["user:a", "user:b"]
 
     def test_errors_are_reported_and_the_loop_continues(
         self, repl: dict[str, Any], capsys: pytest.CaptureFixture[str]
@@ -1014,74 +1041,47 @@ class TestMain:
         repl["inputs"] = ["explode", "after", "exit"]
         main.main()
         assert repl["prompts"] == ["explode", "after"]
-        assert "Agent error: RuntimeError: boom" in capsys.readouterr().out
-
-    def test_one_conversation_is_shared_across_turns(
-        self, repl: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        seen: list[int] = []
-        monkeypatch.setattr(
-            main,
-            "run_turn",
-            lambda client, conversation, prompt, schemas, instructions: seen.append(
-                id(conversation)
-            ),
-        )
-        repl["inputs"] = ["a", "b", "exit"]
-        main.main()
-        assert len(seen) == 2 and seen[0] == seen[1]
-
-    def test_banner_mentions_clear(
-        self, repl: dict[str, Any], capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        repl["inputs"] = ["exit"]
-        main.main()
-        assert "'/clear' to start a new conversation" in capsys.readouterr().out
+        assert "[Agent error: RuntimeError: boom]" in capsys.readouterr().out
 
     @pytest.mark.parametrize("command", ["/clear", "/CLEAR", "  /clear  "])
     def test_clear_empties_the_history_and_keeps_going(
         self,
         repl: dict[str, Any],
-        monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
         command: str,
     ) -> None:
-        sizes: list[int] = []
-
-        def fake_run_turn(
-            client: Any,
-            conversation: main.Conversation,
-            prompt: str,
-            schemas: Any,
-            instructions: str,
-        ) -> None:
-            sizes.append(len(conversation.history))
-            conversation.history.append({"role": "user", "content": prompt})
-            conversation.tokens_per_byte = 0.5
-
-        monkeypatch.setattr(main, "run_turn", fake_run_turn)
         repl["inputs"] = ["one", "two", command, "three", "exit"]
         main.main()
-        # History grows, is emptied by /clear, and /clear itself is not sent.
-        assert sizes == [0, 1, 0]
+        # /clear itself is not sent to the model.
+        assert repl["prompts"] == ["one", "two", "three"]
+        assert kinds(repl["agents"][0].conversation.history) == ["user:three"]
         assert "[Conversation cleared]" in capsys.readouterr().out
 
-    def test_clear_keeps_the_learned_token_ratio(
-        self, repl: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        ratios: list[float] = []
-
-        def fake_run_turn(
-            client: Any,
-            conversation: main.Conversation,
-            prompt: str,
-            schemas: Any,
-            instructions: str,
-        ) -> None:
-            ratios.append(conversation.tokens_per_byte)
-            conversation.tokens_per_byte = 0.5
-
-        monkeypatch.setattr(main, "run_turn", fake_run_turn)
-        repl["inputs"] = ["one", "/clear", "two", "exit"]
+    def test_clear_keeps_the_learned_token_ratio(self, repl: dict[str, Any]) -> None:
+        repl["inputs"] = ["learn", "/clear", "exit"]
         main.main()
-        assert ratios == [0.25, 0.5]
+        assert repl["agents"][0].conversation.tokens_per_byte == 0.5
+
+
+class TestNotices:
+    """How Repl lays out the model's text and its own bracketed notices."""
+
+    def test_notice_after_text_starts_a_new_line(
+        self, settings: config.Config, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repl = main.Repl(Api(settings).agent())
+        repl.write("partial answer")
+        repl.notice("Interrupted; returning to prompt")
+        assert (
+            capsys.readouterr().out
+            == "partial answer\n[Interrupted; returning to prompt]\n"
+        )
+
+    def test_notice_at_a_line_start_adds_no_blank_line(
+        self, settings: config.Config, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repl = main.Repl(Api(settings).agent())
+        repl.write("full line\n")
+        repl.notice("thinking…")
+        repl.notice("thinking…")
+        assert capsys.readouterr().out == "full line\n[thinking…]\n[thinking…]\n"

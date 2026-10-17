@@ -19,33 +19,47 @@ ALL_TOOLS = [
 ]
 
 
+def toolbox_for(settings: config.Config) -> tools.Toolbox:
+    return tools.Toolbox.for_config(settings)
+
+
+@pytest.fixture
+def toolbox(settings: config.Config) -> tools.Toolbox:
+    return toolbox_for(settings)
+
+
+def schema_named(settings: config.Config, name: str) -> Any:
+    settings.brave_api_key = "brave-key"
+    return next(s for s in toolbox_for(settings).schemas() if s["name"] == name)
+
+
 class TestToolSchemas:
-    def test_web_search_is_left_out_without_a_key(self) -> None:
-        assert [schema["name"] for schema in tools.build_tool_schemas()] == ALL_TOOLS[
-            :-1
-        ]
+    def test_web_search_is_left_out_without_a_key(self, toolbox: tools.Toolbox) -> None:
+        assert [schema["name"] for schema in toolbox.schemas()] == ALL_TOOLS[:-1]
 
     def test_web_search_is_offered_with_a_key(self, settings: config.Config) -> None:
         settings.brave_api_key = "brave-key"
-        assert [schema["name"] for schema in tools.build_tool_schemas()] == ALL_TOOLS
+        assert [
+            schema["name"] for schema in toolbox_for(settings).schemas()
+        ] == ALL_TOOLS
 
     def test_empty_key_counts_as_unset(self, settings: config.Config) -> None:
         settings.brave_api_key = ""
-        assert "web_search" not in [
-            schema["name"] for schema in tools.build_tool_schemas()
-        ]
+        assert "web_search" not in toolbox_for(settings).tools
 
-    def test_registry_lists_every_tool(self) -> None:
-        assert list(tools.TOOLS) == ALL_TOOLS
+    def test_tools_are_looked_up_by_their_name(self, settings: config.Config) -> None:
+        settings.brave_api_key = "brave-key"
+        toolbox = toolbox_for(settings)
+        assert list(toolbox.tools) == ALL_TOOLS
+        assert all(name == tool.name for name, tool in toolbox.tools.items())
 
     def test_schemas_are_json_serialisable(self, settings: config.Config) -> None:
         settings.brave_api_key = "brave-key"
-        json.dumps(tools.build_tool_schemas())
+        json.dumps(toolbox_for(settings).schemas())
 
     @pytest.mark.parametrize("name", ALL_TOOLS)
     def test_schema_is_strict(self, name: str, settings: config.Config) -> None:
-        settings.brave_api_key = "brave-key"
-        schema: Any = next(s for s in tools.build_tool_schemas() if s["name"] == name)
+        schema = schema_named(settings, name)
         parameters = schema["parameters"]
         assert schema["type"] == "function"
         assert schema["strict"] is True
@@ -58,25 +72,20 @@ class TestToolSchemas:
         )
 
     @pytest.mark.parametrize("name", ALL_TOOLS)
-    def test_description_is_the_handler_docstring(
+    def test_description_is_the_tool_class_docstring(
         self, name: str, settings: config.Config
     ) -> None:
-        settings.brave_api_key = "brave-key"
-        schema: Any = next(s for s in tools.build_tool_schemas() if s["name"] == name)
-        handler, _ = tools.TOOLS[name]
-        assert schema["description"] == inspect.getdoc(handler)
+        schema = schema_named(settings, name)
+        tool = toolbox_for(settings).tools[name]
+        assert schema["description"] == inspect.getdoc(type(tool))
         assert schema["description"]
 
     @pytest.mark.parametrize("name", ALL_TOOLS)
-    def test_argument_model_matches_the_handler_signature(self, name: str) -> None:
-        handler, arguments_model = tools.TOOLS[name]
-        assert list(arguments_model.model_fields) == list(
-            inspect.signature(handler).parameters
-        )
-
-    @pytest.mark.parametrize("name", ALL_TOOLS)
-    def test_argument_fields_have_no_defaults(self, name: str) -> None:
-        _, arguments_model = tools.TOOLS[name]
+    def test_argument_fields_have_no_defaults(
+        self, name: str, settings: config.Config
+    ) -> None:
+        settings.brave_api_key = "brave-key"
+        arguments_model = toolbox_for(settings).tools[name].arguments_model
         assert all(
             field.is_required() for field in arguments_model.model_fields.values()
         )
@@ -88,9 +97,11 @@ class TestToolSchemas:
 
 
 class TestExecuteToolCall:
-    def test_success_returns_the_handler_result(self, workspace: Path) -> None:
+    def test_success_returns_the_handler_result(
+        self, toolbox: tools.Toolbox, workspace: Path
+    ) -> None:
         (workspace / "f.txt").write_text("hello\n")
-        result = tools.execute_tool_call(
+        result = toolbox.execute(
             tool_call(
                 "read_file", path="f.txt", start_line=None, end_line=None, offset=None
             )
@@ -102,14 +113,16 @@ class TestExecuteToolCall:
             "next_offset": None,
         }
 
-    def test_arguments_reach_the_handler(self, workspace: Path) -> None:
-        tools.execute_tool_call(
+    def test_arguments_reach_the_handler(
+        self, toolbox: tools.Toolbox, workspace: Path
+    ) -> None:
+        toolbox.execute(
             tool_call("write_file", path="out.txt", content="data", append=False)
         )
         assert (workspace / "out.txt").read_text() == "data"
 
-    def test_unknown_tool(self) -> None:
-        assert tools.execute_tool_call(tool_call("launch_rocket")) == {
+    def test_unknown_tool(self, toolbox: tools.Toolbox) -> None:
+        assert toolbox.execute(tool_call("launch_rocket")) == {
             "ok": False,
             "message": "Unknown tool: launch_rocket",
         }
@@ -141,20 +154,22 @@ class TestExecuteToolCall:
             ),
         ],
     )
-    def test_invalid_arguments(self, arguments: str, expected: str) -> None:
-        result = tools.execute_tool_call(raw_tool_call("read_file", arguments))
+    def test_invalid_arguments(
+        self, toolbox: tools.Toolbox, arguments: str, expected: str
+    ) -> None:
+        result = toolbox.execute(raw_tool_call("read_file", arguments))
         assert result["ok"] is False
         assert result["message"].startswith("ValidationError:")
         assert expected in result["message"]
 
-    def test_booleans_are_not_coerced(self) -> None:
+    def test_booleans_are_not_coerced(self, toolbox: tools.Toolbox) -> None:
         arguments = json.dumps({"path": "f.txt", "content": "x", "append": "false"})
-        result = tools.execute_tool_call(raw_tool_call("write_file", arguments))
+        result = toolbox.execute(raw_tool_call("write_file", arguments))
         assert result["ok"] is False
         assert "bool_type" in result["message"]
 
-    def test_handler_errors_become_results(self) -> None:
-        result = tools.execute_tool_call(
+    def test_handler_errors_become_results(self, toolbox: tools.Toolbox) -> None:
+        result = toolbox.execute(
             tool_call(
                 "read_file",
                 path="missing.txt",
@@ -166,8 +181,8 @@ class TestExecuteToolCall:
         assert result["ok"] is False
         assert result["message"].startswith("FileNotFoundError:")
 
-    def test_workspace_violations_become_results(self) -> None:
-        result = tools.execute_tool_call(
+    def test_workspace_violations_become_results(self, toolbox: tools.Toolbox) -> None:
+        result = toolbox.execute(
             tool_call("write_file", path="../x.txt", content="x", append=False)
         )
         assert result == {
@@ -175,23 +190,18 @@ class TestExecuteToolCall:
             "message": "ValueError: Path is outside the workspace: ../x.txt",
         }
 
-    def test_web_search_without_a_key_is_a_result_not_a_crash(self) -> None:
-        result = tools.execute_tool_call(tool_call("web_search", query="q", count=None))
-        assert result == {
-            "ok": False,
-            "message": "ValueError: BRAVE_API_KEY is not set",
-        }
+    def test_web_search_without_a_key_is_an_unknown_tool(
+        self, toolbox: tools.Toolbox
+    ) -> None:
+        result = toolbox.execute(tool_call("web_search", query="q", count=None))
+        assert result == {"ok": False, "message": "Unknown tool: web_search"}
 
     def test_keyboard_interrupt_is_not_swallowed(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, toolbox: tools.Toolbox, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def interrupted(**kwargs: Any) -> dict[str, Any]:
+        def interrupted(args: Any) -> dict[str, Any]:
             raise KeyboardInterrupt
 
-        monkeypatch.setitem(
-            tools.TOOLS, "run_command", (interrupted, tools.RunCommandArguments)
-        )
+        monkeypatch.setattr(toolbox.tools["run_command"], "run", interrupted)
         with pytest.raises(KeyboardInterrupt):
-            tools.execute_tool_call(
-                tool_call("run_command", cmd="x", timeout=None, cwd=None)
-            )
+            toolbox.execute(tool_call("run_command", cmd="x", timeout=None, cwd=None))
