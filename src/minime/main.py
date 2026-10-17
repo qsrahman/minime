@@ -2,8 +2,8 @@ import sys
 
 from pydantic import ValidationError
 
-from agent import Agent, TurnError
-from config import Config
+from minime.agent import Agent, TurnError
+from minime.config import Config
 
 try:
     import readline  # noqa: F401  # line editing and history for input()

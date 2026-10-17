@@ -12,12 +12,12 @@ from openai.types.responses import (
 )
 from openai.types.shared_params import Reasoning
 
-from config import Config
-from context import Context, json_bytes
-from fs import EditFileTool, ReadFileTool, WriteFileTool
-from shell import RunCommandTool
-from tools import Tool, Toolbox, Workspace
-from web import WebFetchTool, WebSearchTool
+from minime.config import Config
+from minime.context import Context, json_bytes
+from minime.fs import EditFileTool, ReadFileTool, WriteFileTool
+from minime.shell import RunCommandTool
+from minime.tools import Tool, Toolbox, Workspace
+from minime.web import WebFetchTool, WebSearchTool
 
 SUMMARY_REQUEST = (
     "The conversation above is about to be removed to save space. Write a summary "

@@ -14,10 +14,6 @@ import httpx2
 import openai
 import pytest
 
-import config
-import main
-import shell
-from agent import SUMMARY_REQUEST, SYSTEM_PROMPT, Agent, build_toolbox
 from conftest import (
     OMITTED_TOOL_OUTPUT,
     SUMMARY_MARKER,
@@ -28,8 +24,10 @@ from conftest import (
     reasoning_item,
     response_body,
 )
-from context import Context, json_bytes
-from main import Repl
+from minime import config, main, shell
+from minime.agent import SUMMARY_REQUEST, SYSTEM_PROMPT, Agent, build_toolbox
+from minime.context import Context, json_bytes
+from minime.main import Repl
 
 
 def write(call_id: str, path: str = "out.txt") -> dict[str, Any]:
@@ -442,7 +440,7 @@ class TestInterruptsAndErrors:
         inputs = iter(["first", "second", "exit"])
         monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
         monkeypatch.setattr(main, "Config", lambda: api.settings)
-        monkeypatch.setattr("agent.OpenAI", lambda **kwargs: api.client)
+        monkeypatch.setattr("minime.agent.OpenAI", lambda **kwargs: api.client)
         main.main()
 
         out = capsys.readouterr().out
@@ -647,7 +645,7 @@ class TestTokenBudget:
         assert kinds(api.requests[2]["input"]) == ["user:old", "user:new"]
 
         # ...until a 3000-byte longer system prompt takes that room back.
-        monkeypatch.setattr("agent.SYSTEM_PROMPT", SYSTEM_PROMPT + "i" * 3000)
+        monkeypatch.setattr("minime.agent.SYSTEM_PROMPT", SYSTEM_PROMPT + "i" * 3000)
         api.replies = [answer(""), answer()]
         run(api, old_history())
         assert kinds(api.requests[4]["input"]) == ["user:new"]
@@ -914,7 +912,7 @@ class TestInstructions:
         self, settings: config.Config, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(
-            "agent.SYSTEM_PROMPT", 'Reply with JSON like {"ok": true}.\n'
+            "minime.agent.SYSTEM_PROMPT", 'Reply with JSON like {"ok": true}.\n'
         )
         assert (
             Api(settings)
@@ -933,7 +931,7 @@ class TestInstructions:
             def today() -> date:
                 return next(days)
 
-        monkeypatch.setattr("agent.date", Calendar)
+        monkeypatch.setattr("minime.agent.date", Calendar)
         api.replies = [answer(), answer()]
         agent = api.agent()
         agent.run_turn("before midnight")
@@ -976,7 +974,7 @@ class TestRepl:
 
         monkeypatch.setattr("builtins.input", fake_input)
         monkeypatch.setattr(main, "Config", lambda: settings)
-        monkeypatch.setattr("agent.OpenAI", fake_openai)
+        monkeypatch.setattr("minime.agent.OpenAI", fake_openai)
         monkeypatch.setattr(Agent, "run_turn", fake_run_turn)
         return state
 

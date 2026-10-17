@@ -1,9 +1,8 @@
 # AGENTS.md
 
 ## Project
-MiniMe is a small interactive coding agent in eight flat modules in `src/` (no
-package; `src/` is put on the import path),
-written as a handful of classes that get their dependencies through their
+MiniMe is a small interactive coding agent: the package `minime` in
+`src/minime/` (eight modules), written as a handful of classes that get their dependencies through their
 constructors; there is no global state:
 - `config.py` — `Config`. `main()` builds it once, reporting invalid settings
   and exiting, and passes it down.
@@ -29,7 +28,10 @@ constructors; there is no global state:
 
 ## Commands
 - `uv sync` — install dependencies.
-- `uv run src/main.py` — run the agent (the only entrypoint).
+- `uv run minime` — run the agent. The `minime` command comes from
+  `[project.scripts]` (`minime.main:main`); `uv sync` installs the package in
+  editable mode, so source changes apply without reinstalling.
+  `python -m minime.main` also works.
 - `uv run pytest` — run the offline tests in `tests/` (a few seconds; no network
   access, API key or `.env` needed).
 - `uv run pytest -m live` — run `tests/test_live.py` against the real model in
@@ -44,10 +46,11 @@ constructors; there is no global state:
   commands; ask before adding tooling.
 
 ## Tests
-- Tests import the modules by name: `pythonpath = ["src"]` in `pyproject.toml`
-  (and ruff's `src = ["src", "tests"]` so they sort as first-party). Code that
-  starts the agent as a process must put `src/` on `PYTHONPATH` or run
-  `src/main.py`.
+- Tests import the installed package (`from minime import tools`,
+  `from minime.agent import Agent`); ruff's `src = ["src", "tests"]` makes them
+  sort as first-party. Patch names by their full module path, e.g.
+  `"minime.agent.SYSTEM_PROMPT"`. Code that starts the agent as a process runs
+  `python -m minime.main` with the venv's interpreter.
 - `tests/conftest.py` has an autouse `settings` fixture: every test gets its own
   `Config` and a temporary workspace. Objects read their settings when they are
   built, so change `settings` before building a `Toolbox` or `Agent`.
@@ -56,10 +59,10 @@ constructors; there is no global state:
   False), `site` (a local HTTP server with per-test routes), `api` (see below),
   `tool_call` (a tool call for `Toolbox.execute`), and `kinds` (a
   one-label-per-item summary of `history` or of a request's input).
-- Patch a name in the module that looks it up: `"agent.SYSTEM_PROMPT"`,
-  `"agent.date"` and `"agent.OpenAI"` for the agent, `main.Config` for the
-  entry point.
-- Build agents in tests with `api.agent()`, never `main.Agent(settings)`: an
+- Patch a name in the module that looks it up: `"minime.agent.SYSTEM_PROMPT"`,
+  `"minime.agent.date"` and `"minime.agent.OpenAI"` for the agent,
+  `main.Config` (with `from minime import main`) for the entry point.
+- Build agents in tests with `api.agent()`, never `Agent(settings)`: an
   agent that makes its own OpenAI client sets up TLS, which on macOS starts a
   system thread that outlives the test and breaks the pty tests' fork.
 - The loop tests (`tests/test_loop.py`) run the real `openai` client: the
@@ -102,7 +105,9 @@ constructors; there is no global state:
   `BRAVE_API_KEY`→`brave_api_key`. Unknown env vars are ignored.
 - `workspace_root` defaults to the current working directory and must be an
   existing directory (checked at startup); `.env` is read from the project
-  root (one level above `src/`), wherever the agent is started from. `Workspace.resolve` restricts the file tools and
+  root (`parents[2]` of `src/minime/config.py`), wherever the agent is started
+  from. That only works for the editable install; a copied install (a plain
+  `uv tool install .`) has no `.env` and reads settings from the environment. `Workspace.resolve` restricts the file tools and
   `run_command`'s `cwd` to it, but `run_command` itself runs with
   `shell=True` and is not sandboxed.
 - `SYSTEM_PROMPT` is plain text; `Agent.instructions()` appends an Environment

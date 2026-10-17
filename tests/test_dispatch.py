@@ -5,11 +5,9 @@ from typing import Any
 
 import pytest
 
-import config
-import fs
-import tools
-from agent import build_toolbox
 from conftest import raw_tool_call, tool_call
+from minime import config, fs, tools
+from minime.agent import build_toolbox
 
 ALL_TOOLS = [
     "read_file",

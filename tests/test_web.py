@@ -4,11 +4,9 @@ from typing import Any
 import httpx2
 import pytest
 
-import config
-import tools
-import web
-from agent import build_toolbox
 from conftest import Site, Tools
+from minime import config, tools, web
+from minime.agent import build_toolbox
 
 LIMIT = tools.MAX_TOOL_OUTPUT_BYTES
 

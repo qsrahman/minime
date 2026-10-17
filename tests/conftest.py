@@ -10,10 +10,9 @@ import openai
 import pytest
 from openai.types.responses import ResponseFunctionToolCall
 
-import config
-import tools
-from agent import Agent, build_toolbox
-from context import Context
+from minime import config, tools
+from minime.agent import Agent, build_toolbox
+from minime.context import Context
 
 # Texts the agent puts into history, checked by the tests.
 OMITTED_TOOL_OUTPUT = (

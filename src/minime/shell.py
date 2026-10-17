@@ -7,7 +7,7 @@ from typing import IO, Any
 
 from pydantic import Field
 
-from tools import MAX_TOOL_OUTPUT_BYTES, Tool, ToolArguments, Workspace
+from minime.tools import MAX_TOOL_OUTPUT_BYTES, Tool, ToolArguments, Workspace
 
 # Bytes set aside for the "[... N bytes omitted ...]" line in clipped output.
 OMISSION_MARKER_ROOM = 48

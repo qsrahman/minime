@@ -7,7 +7,7 @@ from urllib.parse import urljoin
 import httpx2
 from pydantic import Field
 
-from tools import MAX_TOOL_OUTPUT_BYTES, Tool, ToolArguments
+from minime.tools import MAX_TOOL_OUTPUT_BYTES, Tool, ToolArguments
 
 MAX_FETCH_BYTES = 2 * 1024 * 1024
 WEB_TIMEOUT_SECONDS = 20

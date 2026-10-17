@@ -6,10 +6,8 @@ from pathlib import Path
 
 import pytest
 
-import config
-import shell
-import tools
 from conftest import Tools
+from minime import config, shell, tools
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="uses POSIX shell commands")
 

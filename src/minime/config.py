@@ -9,8 +9,9 @@ class Config(BaseSettings):
     """Configuration for the AI coding agent."""
 
     model_config = SettingsConfigDict(
-        # .env stays in the project root, one level above src/.
-        env_file=Path(__file__).parent.parent / ".env",
+        # .env stays in the project root, above src/minime/. That holds for
+        # the editable install `uv sync` makes; a copied install finds none.
+        env_file=Path(__file__).parents[2] / ".env",
         extra="ignore",
     )
     api_key: str = Field(

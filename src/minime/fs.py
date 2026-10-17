@@ -3,7 +3,7 @@ from typing import Any
 
 from pydantic import Field
 
-from tools import MAX_TOOL_OUTPUT_BYTES, Tool, ToolArguments, Workspace
+from minime.tools import MAX_TOOL_OUTPUT_BYTES, Tool, ToolArguments, Workspace
 
 
 class ReadFileArguments(ToolArguments):

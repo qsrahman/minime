@@ -4,8 +4,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-import main
-from config import Config
+from minime import main
+from minime.config import Config
 
 
 def make(**values: object) -> Config:

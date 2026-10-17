@@ -9,9 +9,11 @@ They use the .env settings with a temporary workspace, and assert on effects
 (files written, tool calls made, facts recalled) rather than on wording.
 """
 
+import json
 import os
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -19,13 +21,12 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from agent import Agent, TurnError
-from config import Config
 from conftest import ENV_VARS
-from tools import Toolbox
+from minime.agent import Agent, TurnError
+from minime.config import Config
+from minime.tools import Toolbox
 
 pytestmark = pytest.mark.live
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # Captured at import, before the autouse settings fixture clears these for
 # offline tests, so `OPENAI_MODEL=... uv run pytest -m live` still applies.
 SHELL_SETTINGS = {name: os.environ[name] for name in ENV_VARS if name in os.environ}
@@ -265,14 +266,14 @@ def test_turn_limit_is_reported(
 
 
 def test_the_program_end_to_end(tmp_path: Path) -> None:
-    """main.py as a user runs it, with input piped in."""
+    """The agent as a user runs it, with input piped in."""
     try:
         Config(**{**SHELL_SETTINGS, "WORKSPACE_ROOT": tmp_path})  # pyright: ignore[reportCallIssue]
     except ValidationError:
         pytest.skip("no usable .env for live tests")
     (tmp_path / "note.txt").write_text("marker-7431\n")
     result = subprocess.run(
-        [sys.executable, str(PROJECT_ROOT / "src" / "main.py")],
+        [sys.executable, "-m", "minime.main"],
         input="Read note.txt and reply with its contents only.\n/clear\nexit\n",
         capture_output=True,
         text=True,
@@ -613,3 +614,141 @@ class TestEditFile:
             "nothing else.",
         )
         assert path.read_bytes() == b"[main]\r\nretries = 5\r\ncolour = blue\r\n"
+
+
+def shell_only(agent: Agent) -> Agent:
+    return only_tools(agent, "run_command")
+
+
+def calls(turn: Turn, name: str) -> list[dict[str, Any]]:
+    """The arguments of each call the model made to one tool."""
+    return [
+        json.loads(item.arguments)
+        for item in turn.items
+        if getattr(item, "type", None) == "function_call" and item.name == name
+    ]
+
+
+def results(turn: Turn) -> list[dict[str, Any]]:
+    """Every tool result of the turn, decoded."""
+    return [
+        json.loads(item["output"])
+        for item in turn.items
+        if isinstance(item, dict) and item.get("type") == "function_call_output"
+    ]
+
+
+class TestRunCommand:
+    """run_command as the model uses it. Only run_command is offered."""
+
+    def test_output_is_reported(self, make_agent: Callable[..., Agent]) -> None:
+        turn = Turn(
+            shell_only(make_agent()),
+            f"Run this with run_command and tell me what it printed: "
+            f'{sys.executable} -c "print(sum(range(101)))"',
+        )
+        assert "run_command" in turn.tools_called
+        assert any(
+            result.get("stdout", "").strip() == "5050" for result in results(turn)
+        )
+        assert turn.says("5050")
+
+    def test_exit_code(self, make_agent: Callable[..., Agent]) -> None:
+        turn = Turn(
+            shell_only(make_agent()),
+            f"Run this with run_command and tell me its exit code as a number: "
+            f'{sys.executable} -c "import sys; sys.exit(3)"',
+        )
+        assert any(result.get("returncode") == 3 for result in results(turn))
+        assert turn.says("3")
+
+    def test_stderr_is_reported(self, make_agent: Callable[..., Agent]) -> None:
+        turn = Turn(
+            shell_only(make_agent()),
+            "Run with run_command: ls definitely-missing-file-8812 . Then tell me, "
+            "word for word, the name of the file the error message complains about.",
+        )
+        assert any(
+            "definitely-missing-file-8812" in result.get("stderr", "")
+            for result in results(turn)
+        )
+        assert turn.says("definitely-missing-file-8812")
+
+    def test_timeout(self, make_agent: Callable[..., Agent]) -> None:
+        started = time.monotonic()
+        turn = Turn(
+            shell_only(make_agent()),
+            "Run `sleep 60` with run_command and a timeout of 2 seconds, then tell "
+            "me whether it finished or timed out.",
+        )
+        took = time.monotonic() - started
+        assert any(call.get("timeout") == 2 for call in calls(turn, "run_command"))
+        assert any(result.get("timed_out") is True for result in results(turn))
+        assert took < 45  # far less than the 60 seconds the command wanted
+        assert turn.says("timed out") or turn.says("time out") or turn.says("timeout")
+
+    def test_working_directory(
+        self, make_agent: Callable[..., Agent], tmp_path: Path
+    ) -> None:
+        (tmp_path / "sub" / "deeper").mkdir(parents=True)
+        (tmp_path / "sub" / "deeper" / "here.txt").write_text("x")
+        turn = Turn(
+            shell_only(make_agent()),
+            "Use run_command with cwd set to sub/deeper to run ls, and tell me the "
+            "file name it lists.",
+        )
+        assert any(call.get("cwd") for call in calls(turn, "run_command"))
+        assert turn.says("here.txt")
+
+    def test_working_directory_outside_the_workspace_is_refused(
+        self, make_agent: Callable[..., Agent], tmp_path: Path
+    ) -> None:
+        turn = Turn(
+            shell_only(make_agent()),
+            f"Use run_command with cwd set to {tmp_path.parent} to run pwd.",
+        )
+        # The model may decline on its own; if it tries, the tool must refuse.
+        for call, result in zip(
+            calls(turn, "run_command"), results(turn), strict=False
+        ):
+            if (
+                call.get("cwd")
+                and Path(call["cwd"]).resolve() == tmp_path.parent.resolve()
+            ):
+                assert result["ok"] is False
+                assert "outside the workspace" in result["message"]
+
+    def test_long_output_keeps_its_end(self, make_agent: Callable[..., Agent]) -> None:
+        turn = Turn(
+            shell_only(make_agent()),
+            "Run `seq 1 200000` with run_command (do not filter or pipe it) and "
+            "tell me the last number it printed.",
+        )
+        outputs = [result.get("stdout", "") for result in results(turn)]
+        assert any("bytes omitted" in output for output in outputs)
+        assert any(output.rstrip().endswith("200000") for output in outputs)
+        assert turn.says("200000")
+
+    def test_pipes_and_redirects(
+        self, make_agent: Callable[..., Agent], tmp_path: Path
+    ) -> None:
+        Turn(
+            shell_only(make_agent()),
+            "With one run_command call, run: printf 'pear\\napple\\nfig\\n' | sort > "
+            "sorted.txt",
+        )
+        assert (tmp_path / "sorted.txt").read_text() == "apple\nfig\npear\n"
+
+    def test_commands_get_no_input(self, make_agent: Callable[..., Agent]) -> None:
+        started = time.monotonic()
+        turn = Turn(
+            shell_only(make_agent()),
+            "Run `cat` with run_command, exactly as written with no arguments and "
+            "a timeout of 20 seconds, and tell me what it printed.",
+        )
+        # With no standard input, cat ends at once instead of waiting 20 seconds.
+        assert any(
+            result.get("timed_out") is False and result.get("returncode") == 0
+            for result in results(turn)
+        )
+        assert time.monotonic() - started < 40

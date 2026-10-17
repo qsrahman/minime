@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-import tools
 from conftest import Tools
+from minime import tools
 
 
 class TestResolveWorkspacePath:

@@ -4,7 +4,7 @@ from typing import Any
 import pytest
 
 from conftest import OMITTED_TOOL_OUTPUT
-from context import TRIM_TARGET, Context, json_bytes
+from minime.context import TRIM_TARGET, Context, json_bytes
 
 NO_LIMIT = 10**9
 PLACEHOLDER = (
