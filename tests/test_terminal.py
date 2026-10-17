@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
 from conftest import call_item, kinds, message_item, response_body, stream_events
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="needs a pseudo-terminal")
@@ -104,7 +105,7 @@ class Terminal:
             "OPENAI_API_KEY": "test-key",
             "OPENAI_BASE_URL": endpoint.url,
             "WORKSPACE_ROOT": str(workspace),
-            "PYTHONPATH": str(PROJECT_ROOT),
+            "PYTHONPATH": str(PROJECT_ROOT / "src"),
             "TERM": "dumb",
         }
         self.pid, self.fd = pty.fork()

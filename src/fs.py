@@ -31,7 +31,7 @@ class EditFileArguments(ToolArguments):
 
 
 class ReadFileTool(Tool[ReadFileArguments]):
-    """Read a file, optionally limited to an inclusive line range. When the file continues past the returned lines (because of end_line or the output limit), next_start_line is set: pass it as start_line to read on."""
+    """Read a file, optionally limited to an inclusive line range. When the file continues past the returned lines (because of end_line or the output limit), next_start_line is set: pass it as start_line to read on, together with next_offset as offset when that is set (a single line longer than the limit comes in pieces)."""
 
     name = "read_file"
     arguments_model = ReadFileArguments
@@ -61,10 +61,14 @@ class ReadFileTool(Tool[ReadFileArguments]):
         next_start_line = None
         next_offset = None
         with file_path.open(encoding="utf-8") as file:
-            numbered_lines = enumerate(
-                islice(file, first_line - 1, args.end_line), first_line
-            )
-            for number, line in numbered_lines:
+            for number, line in enumerate(
+                islice(file, first_line - 1, None), first_line
+            ):
+                if args.end_line is not None and number > args.end_line:
+                    # The file goes on past end_line; say so, or the model
+                    # takes end_line for the end of the file.
+                    next_start_line = number
+                    break
                 if number == first_line and args.offset:
                     line = line[args.offset :]
                 size += len(line.encode("utf-8"))
@@ -81,12 +85,21 @@ class ReadFileTool(Tool[ReadFileArguments]):
                     break
                 lines.append(line)
 
-        return {
+        result: dict[str, Any] = {
             "ok": True,
             "content": "".join(lines),
             "next_start_line": next_start_line,
             "next_offset": next_offset,
         }
+        if next_start_line is not None:
+            continue_with = f"start_line={next_start_line}" + (
+                f" and offset={next_offset}" if next_offset is not None else ""
+            )
+            result["message"] = (
+                "The file continues past the returned content; call read_file "
+                f"again with {continue_with} to read on."
+            )
+        return result
 
 
 class WriteFileTool(Tool[WriteFileArguments]):

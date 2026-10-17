@@ -13,6 +13,11 @@ from typing import Any
 import httpx2
 import openai
 import pytest
+
+import config
+import main
+import shell
+from agent import SUMMARY_REQUEST, SYSTEM_PROMPT, Agent, build_toolbox
 from conftest import (
     OMITTED_TOOL_OUTPUT,
     SUMMARY_MARKER,
@@ -23,11 +28,6 @@ from conftest import (
     reasoning_item,
     response_body,
 )
-
-import config
-import main
-import shell
-from agent import SUMMARY_REQUEST, SYSTEM_PROMPT, Agent, build_toolbox
 from context import Context, json_bytes
 from main import Repl
 

@@ -2,8 +2,8 @@ import json
 from typing import Any
 
 import pytest
-from conftest import OMITTED_TOOL_OUTPUT
 
+from conftest import OMITTED_TOOL_OUTPUT
 from context import TRIM_TARGET, Context, json_bytes
 
 NO_LIMIT = 10**9

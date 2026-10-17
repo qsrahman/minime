@@ -5,11 +5,11 @@ import time
 from pathlib import Path
 
 import pytest
-from conftest import Tools
 
 import config
 import shell
 import tools
+from conftest import Tools
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="uses POSIX shell commands")
 

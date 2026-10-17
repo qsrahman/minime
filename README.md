@@ -19,7 +19,7 @@ Set the required API key, then start the agent:
 
 ```sh
 export OPENAI_API_KEY="your-api-key"
-uv run main.py
+uv run src/main.py
 ```
 
 Alternatively, put `OPENAI_API_KEY=your-api-key` in a `.env` file in the MiniMe directory. MiniMe loads that file automatically, wherever it is started from. Do not commit your API key.
@@ -31,7 +31,7 @@ Conversation history is kept in memory for the duration of the process, limited 
 To work on another project, start MiniMe from that project's directory:
 
 ```sh
-uv run --project /path/to/minime /path/to/minime/main.py
+uv run --project /path/to/minime /path/to/minime/src/main.py
 ```
 
 ## Configuration
@@ -54,7 +54,7 @@ Configuration can be provided through environment variables or the `.env` file. 
 
 ## Agent tools
 
-- `read_file` reads a workspace file, optionally selecting a range of lines. Long files are returned up to 16 KB at a time, in whole lines, with the line number to continue from. A single line longer than that is returned in pieces.
+- `read_file` reads a workspace file, optionally selecting a range of lines. Long files are returned up to 16 KB at a time, in whole lines, with the line number to continue from. A single line longer than that is returned in pieces. Whenever the file continues past what was returned, including after a requested line range, the result says where to continue.
 - `write_file` creates or replaces a workspace file, or appends to it.
 - `edit_file` replaces a text fragment; by default, the fragment must occur exactly once. Files with Windows (CRLF) line endings can be edited with text copied from `read_file`, and keep their line endings. If the fragment is missing but matches apart from whitespace, the error says so.
 - `run_command` runs a shell command from the workspace, with an optional working directory and timeout. Commands get no standard input. stdout and stderr share a 16 KB limit; when a stream is clipped, its start and end are kept and the middle is omitted.
@@ -67,7 +67,7 @@ Web pages and search results are passed to the model as they are. A page can con
 
 ## Development
 
-The project declares its runtime dependencies in `pyproject.toml`. Use `uv sync` to install them and `uv run main.py` to start the agent from the project directory. The code is eight modules: `config.py` (settings), `tools.py` (what all tools share: the `Tool` base class and the `Toolbox` that holds them), `fs.py`, `shell.py` and `web.py` (the file, command and web tools), `context.py` (`Context`, the conversation history), `agent.py` (`Agent`, the tool loop) and `main.py` (`Repl`, the terminal, and the entry point).
+The project declares its runtime dependencies in `pyproject.toml`. Use `uv sync` to install them and `uv run src/main.py` to start the agent from the project directory. The code is eight modules in `src/`: `config.py` (settings), `tools.py` (what all tools share: the `Tool` base class and the `Toolbox` that holds them), `fs.py`, `shell.py` and `web.py` (the file, command and web tools), `context.py` (`Context`, the conversation history), `agent.py` (`Agent`, the tool loop) and `main.py` (`Repl`, the terminal, and the entry point).
 
 Run the tests with:
 

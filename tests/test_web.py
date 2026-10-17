@@ -3,12 +3,12 @@ from typing import Any
 
 import httpx2
 import pytest
-from conftest import Site, Tools
 
 import config
 import tools
 import web
 from agent import build_toolbox
+from conftest import Site, Tools
 
 LIMIT = tools.MAX_TOOL_OUTPUT_BYTES
 

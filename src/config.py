@@ -9,7 +9,8 @@ class Config(BaseSettings):
     """Configuration for the AI coding agent."""
 
     model_config = SettingsConfigDict(
-        env_file=Path(__file__).parent / ".env",
+        # .env stays in the project root, one level above src/.
+        env_file=Path(__file__).parent.parent / ".env",
         extra="ignore",
     )
     api_key: str = Field(

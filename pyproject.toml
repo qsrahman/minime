@@ -19,13 +19,15 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# The modules are flat files in the project root, not an installed package.
-pythonpath = ["."]
+# The modules are flat files in src/, not an installed package.
+pythonpath = ["src"]
 # Live tests call the real model configured in .env: uv run pytest -m live
 addopts = "-m 'not live'"
 markers = ["live: end-to-end tests against the real model configured in .env"]
 
 [tool.ruff]
+# So imports of the project's own modules sort as first-party.
+src = ["src", "tests"]
 target-version = "py314"
 
 [tool.ruff.lint]

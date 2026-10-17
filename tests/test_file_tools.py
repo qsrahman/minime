@@ -1,9 +1,9 @@
 from pathlib import Path
 
 import pytest
-from conftest import Tools
 
 import tools
+from conftest import Tools
 
 
 class TestResolveWorkspacePath:
@@ -64,7 +64,38 @@ class TestReadFile:
     def test_inclusive_range(self, tool: Tools, numbered: Path) -> None:
         result = tool.read_file("numbers.txt", 3, 5)
         assert result["content"] == "line 3\nline 4\nline 5\n"
+        # The file goes on, and the result says where.
+        assert result["next_start_line"] == 6
+        assert result["next_offset"] is None
+        assert result["message"] == (
+            "The file continues past the returned content; call read_file "
+            "again with start_line=6 to read on."
+        )
+
+    @pytest.mark.parametrize("end", [10, 11, 500])
+    def test_end_line_at_or_past_the_end_of_the_file(
+        self, tool: Tools, numbered: Path, end: int
+    ) -> None:
+        result = tool.read_file("numbers.txt", 9, end)
+        assert result["content"] == "line 9\nline 10\n"
         assert result["next_start_line"] is None
+        assert "message" not in result
+
+    def test_whole_file_has_no_continuation_message(
+        self, tool: Tools, numbered: Path
+    ) -> None:
+        assert "message" not in tool.read_file("numbers.txt")
+
+    def test_following_next_start_line_reads_everything_once(
+        self, tool: Tools, numbered: Path
+    ) -> None:
+        parts, start = [], 1
+        while start is not None:
+            result = tool.read_file("numbers.txt", start, start + 2)
+            parts.append(result["content"])
+            start = result["next_start_line"]
+        assert "".join(parts) == numbered.read_text()
+        assert len(parts) == 4
 
     def test_start_only(self, tool: Tools, numbered: Path) -> None:
         assert tool.read_file("numbers.txt", 9)["content"] == "line 9\nline 10\n"
@@ -161,10 +192,12 @@ class TestReadFile:
         assert result["content"].startswith("line 2000\n")
         assert result["next_start_line"] is None
 
-    def test_range_within_the_limit_is_not_paged(self, tool: Tools, big: Path) -> None:
+    def test_range_within_the_limit_still_says_where_to_continue(
+        self, tool: Tools, big: Path
+    ) -> None:
         result = tool.read_file("big.txt", 3, 4)
         assert result["content"] == "line 0003\nline 0004\n"
-        assert result["next_start_line"] is None
+        assert result["next_start_line"] == 5
 
     def test_range_over_the_limit_is_paged(self, tool: Tools, big: Path) -> None:
         result = tool.read_file("big.txt", 1, 2500)
@@ -195,6 +228,9 @@ class TestReadFile:
         )
 
         second = tool.read_file("long.txt", 2)
+        assert second["message"].endswith(
+            f"again with start_line=2 and offset={LIMIT} to read on."
+        )
         assert second["content"] == "x" * LIMIT
         assert (second["next_start_line"], second["next_offset"]) == (2, LIMIT)
 

@@ -1,7 +1,8 @@
 # AGENTS.md
 
 ## Project
-MiniMe is a small interactive coding agent in eight flat modules (no package),
+MiniMe is a small interactive coding agent in eight flat modules in `src/` (no
+package; `src/` is put on the import path),
 written as a handful of classes that get their dependencies through their
 constructors; there is no global state:
 - `config.py` — `Config`. `main()` builds it once, reporting invalid settings
@@ -28,7 +29,7 @@ constructors; there is no global state:
 
 ## Commands
 - `uv sync` — install dependencies.
-- `uv run main.py` — run the agent (the only entrypoint).
+- `uv run src/main.py` — run the agent (the only entrypoint).
 - `uv run pytest` — run the offline tests in `tests/` (a few seconds; no network
   access, API key or `.env` needed).
 - `uv run pytest -m live` — run `tests/test_live.py` against the real model in
@@ -43,6 +44,10 @@ constructors; there is no global state:
   commands; ask before adding tooling.
 
 ## Tests
+- Tests import the modules by name: `pythonpath = ["src"]` in `pyproject.toml`
+  (and ruff's `src = ["src", "tests"]` so they sort as first-party). Code that
+  starts the agent as a process must put `src/` on `PYTHONPATH` or run
+  `src/main.py`.
 - `tests/conftest.py` has an autouse `settings` fixture: every test gets its own
   `Config` and a temporary workspace. Objects read their settings when they are
   built, so change `settings` before building a `Toolbox` or `Agent`.
@@ -96,8 +101,8 @@ constructors; there is no global state:
   `MAX_HISTORY_TOKENS`→`max_history_tokens`, `WORKSPACE_ROOT`→`workspace_root`,
   `BRAVE_API_KEY`→`brave_api_key`. Unknown env vars are ignored.
 - `workspace_root` defaults to the current working directory and must be an
-  existing directory (checked at startup); `.env` is still read from next to
-  `config.py`. `Workspace.resolve` restricts the file tools and
+  existing directory (checked at startup); `.env` is read from the project
+  root (one level above `src/`), wherever the agent is started from. `Workspace.resolve` restricts the file tools and
   `run_command`'s `cwd` to it, but `run_command` itself runs with
   `shell=True` and is not sandboxed.
 - `SYSTEM_PROMPT` is plain text; `Agent.instructions()` appends an Environment
@@ -107,7 +112,11 @@ constructors; there is no global state:
   file, converts `old_content` / `new_content` to CRLF; keep the two in step.
 - Tool results are capped at `MAX_TOOL_OUTPUT_BYTES`, each in its own way:
   `read_file` stops at a line boundary and returns `next_start_line` (plus
-  `next_offset` when a single over-long line is returned in pieces);
+  `next_offset` when a single over-long line is returned in pieces). It sets
+  them whenever the file continues past the returned content, including when
+  it stopped at `end_line`, and then adds a `message` naming the exact
+  arguments to continue with: models habitually pass an `end_line`, and with a
+  null `next_start_line` they took it for the end of the file (seen live);
   `web_fetch` returns `next_offset`; `run_command` shares one limit between
   stdout and stderr (neither gets less than half) and keeps the start and end
   of a clipped stream with a note of how many bytes were omitted.

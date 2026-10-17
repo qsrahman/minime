@@ -4,12 +4,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import raw_tool_call, tool_call
 
 import config
 import fs
 import tools
 from agent import build_toolbox
+from conftest import raw_tool_call, tool_call
 
 ALL_TOOLS = [
     "read_file",

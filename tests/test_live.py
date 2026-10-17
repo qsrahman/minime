@@ -17,11 +17,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import ENV_VARS
 from pydantic import ValidationError
 
 from agent import Agent, TurnError
 from config import Config
+from conftest import ENV_VARS
+from tools import Toolbox
 
 pytestmark = pytest.mark.live
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -202,14 +203,20 @@ def test_old_turns_are_summarised_and_remembered(
     for name in ("one", "two", "three"):
         turn = Turn(agent, f"Use read_file on {name}.txt and tell me the code in it.")
         notices += turn.notices
-    assert any("Summarising" in notice for notice in notices)
+    assert any("Summarising" in notice for notice in notices), notices
 
     turn = Turn(
         agent,
         "Without using any tools: what were the first and second codes?",
     )
-    assert turn.tools_called == []
-    assert turn.says("AMBER", "COBALT")
+    summaries = [
+        item["content"]
+        for item in agent.context.history
+        if isinstance(item, dict)
+        and str(item.get("content", "")).startswith("[Summary")
+    ]
+    assert turn.tools_called == [], turn.tools_called
+    assert turn.says("AMBER", "COBALT"), (turn.text, summaries)
 
 
 def _limit_for(agent: Agent, history_tokens: int) -> int:
@@ -265,7 +272,7 @@ def test_the_program_end_to_end(tmp_path: Path) -> None:
         pytest.skip("no usable .env for live tests")
     (tmp_path / "note.txt").write_text("marker-7431\n")
     result = subprocess.run(
-        [sys.executable, str(PROJECT_ROOT / "main.py")],
+        [sys.executable, str(PROJECT_ROOT / "src" / "main.py")],
         input="Read note.txt and reply with its contents only.\n/clear\nexit\n",
         capture_output=True,
         text=True,
@@ -278,3 +285,331 @@ def test_the_program_end_to_end(tmp_path: Path) -> None:
     assert "[Context: " in result.stdout
     assert "[Conversation cleared]" in result.stdout
     assert result.stdout.rstrip().endswith("Goodbye!")
+
+
+def only_tools(agent: Agent, *names: str) -> Agent:
+    """Offer the model only these tools, so it cannot route around the ones
+    under test with grep, sed or a script."""
+    agent.toolbox = Toolbox([agent.toolbox.tools[name] for name in names])
+    agent.tool_schemas = agent.toolbox.schemas()
+    return agent
+
+
+def read_file_only(agent: Agent) -> Agent:
+    return only_tools(agent, "read_file")
+
+
+class TestReadFile:
+    """read_file as the model actually uses it: files too long for one result,
+    single lines longer than the limit, and partial reads. Only read_file is
+    offered."""
+
+    def test_long_file_is_read_to_the_end(
+        self, make_agent: Callable[..., Agent], tmp_path: Path
+    ) -> None:
+        lines = [
+            f"{n:05d} routine log entry, nothing to see here" for n in range(1, 1201)
+        ]
+        lines.append("FINAL ENTRY: the password is TANGERINE-58")
+        (tmp_path / "big.log").write_text("\n".join(lines) + "\n")  # about 50 KB
+        turn = Turn(
+            read_file_only(make_agent()),
+            "big.log is long. Use read_file to read it all, part by part, and "
+            "tell me the password on its final line.",
+        )
+        assert turn.tools_called.count("read_file") >= 3
+        assert turn.says("TANGERINE-58")
+
+    def test_single_line_longer_than_the_limit(
+        self, make_agent: Callable[..., Agent], tmp_path: Path
+    ) -> None:
+        fields = ",".join(f'"key{n}":{n}' for n in range(5000))
+        (tmp_path / "min.json").write_text(
+            "{" + fields + ',"secret_marker":"zebra-4417"}'
+        )  # one line of about 50 KB
+        turn = Turn(
+            read_file_only(make_agent()),
+            "min.json is a single very long line. Use read_file to read all of "
+            "it and tell me the value of secret_marker.",
+        )
+        assert turn.tools_called.count("read_file") >= 3
+        assert turn.says("zebra-4417")
+
+    def test_partial_read_says_the_file_continues(
+        self, make_agent: Callable[..., Agent], tmp_path: Path
+    ) -> None:
+        (tmp_path / "list.txt").write_text("".join(f"item {n}\n" for n in range(1, 41)))
+        turn = Turn(
+            read_file_only(make_agent()),
+            "Call read_file on list.txt with start_line 1 and end_line 10, once. "
+            "Then, judging only from that tool result and without reading again, "
+            "answer: does the file continue past line 10? Reply with yes or no.",
+        )
+        assert turn.tools_called == ["read_file"]
+        assert turn.says("yes")
+
+    def test_continue_from_a_partial_read(
+        self, make_agent: Callable[..., Agent], tmp_path: Path
+    ) -> None:
+        lines = [f"item {n}" for n in range(1, 61)]
+        lines[47] = "item 48: the hidden word is MARZIPAN"
+        (tmp_path / "list.txt").write_text("\n".join(lines) + "\n")
+        turn = Turn(
+            read_file_only(make_agent()),
+            "Read list.txt with read_file 10 lines at a time (use end_line), "
+            "continuing until you find the hidden word, then tell me the word.",
+        )
+        assert turn.tools_called.count("read_file") >= 2
+        assert turn.says("MARZIPAN")
+
+
+def file_tools(agent: Agent) -> Agent:
+    return only_tools(agent, "read_file", "write_file", "edit_file")
+
+
+class TestWriteFile:
+    """write_file as the model uses it. Only the file tools are offered."""
+
+    def test_creates_nested_directories(
+        self, make_agent: Callable[..., Agent], tmp_path: Path
+    ) -> None:
+        turn = Turn(
+            file_tools(make_agent()),
+            "Use write_file to create src/pkg/version.py containing exactly one "
+            "line: VERSION = '1.4.2'",
+        )
+        assert "write_file" in turn.tools_called
+        path = tmp_path / "src" / "pkg" / "version.py"
+        assert path.read_text().strip() in {"VERSION = '1.4.2'", 'VERSION = "1.4.2"'}
+
+    def test_replaces_an_existing_file(
+        self, make_agent: Callable[..., Agent], tmp_path: Path
+    ) -> None:
+        path = tmp_path / "todo.txt"
+        path.write_text("old task one\nold task two\n")
+        Turn(
+            file_tools(make_agent()),
+            "Use write_file to replace the whole of todo.txt so it contains exactly "
+            "two lines: buy milk, then walk dog.",
+        )
+        assert path.read_text().strip().splitlines() == ["buy milk", "walk dog"]
+
+    def test_appends(self, make_agent: Callable[..., Agent], tmp_path: Path) -> None:
+        # Kept strict on purpose: gemma4:cloud fails this by sending a single
+        # line's trailing newline escaped ("second entry\\n"), so a literal
+        # backslash-n is written. That is the model's mistake, not the tool's.
+        path = tmp_path / "log.txt"
+        path.write_text("first entry\n")
+        turn = Turn(
+            file_tools(make_agent()),
+            "Use write_file with append set to true to add a line saying "
+            "second entry to log.txt. Do not change the existing line.",
+        )
+        assert "write_file" in turn.tools_called
+        assert path.read_text().splitlines() == ["first entry", "second entry"]
+
+    def test_non_ascii_text(
+        self, make_agent: Callable[..., Agent], tmp_path: Path
+    ) -> None:
+        Turn(
+            file_tools(make_agent()),
+            "Use write_file to create menu.txt containing exactly one line: "
+            "Café crème — 3,50 € — 咖啡",
+        )
+        assert (tmp_path / "menu.txt").read_text(encoding="utf-8").strip() == (
+            "Café crème — 3,50 € — 咖啡"
+        )
+
+    def test_writing_outside_the_workspace_is_refused(
+        self, make_agent: Callable[..., Agent], tmp_path: Path
+    ) -> None:
+        outside = tmp_path.parent / f"{tmp_path.name}-escape.txt"
+        turn = Turn(
+            file_tools(make_agent()),
+            f"Use write_file to write the word hello to the path {outside}",
+        )
+        assert not outside.exists()
+        # The model may decline on its own (the prompt names the workspace
+        # root); if it does try, the tool must refuse.
+        results = [
+            item["output"]
+            for item in turn.items
+            if isinstance(item, dict) and item.get("type") == "function_call_output"
+        ]
+        if "write_file" in turn.tools_called:
+            assert any("outside the workspace" in result for result in results)
+
+    def test_a_longer_generated_file(
+        self, make_agent: Callable[..., Agent], tmp_path: Path
+    ) -> None:
+        Turn(
+            file_tools(make_agent()),
+            "Use write_file to create squares.csv with a header line n,square "
+            "followed by one line for each n from 1 to 150, like 1,1 then 2,4.",
+        )
+        lines = (tmp_path / "squares.csv").read_text().strip().splitlines()
+        expected = ["n,square", *(f"{n},{n * n}" for n in range(1, 151))]
+        wrong = next(
+            (
+                (number, got, want)
+                for number, (got, want) in enumerate(
+                    zip(lines, expected, strict=False), 1
+                )
+                if got != want
+            ),
+            None,
+        )
+        # A failure here is usually the model mistyping a row, not the tool.
+        assert wrong is None and len(lines) == len(expected), (wrong, len(lines))
+
+
+PROGRAM = """import math
+
+
+def area(radius):
+    return math.pi * radius ** 2
+
+
+def describe(radius):
+    size = area(radius)
+    return f"radius {radius} has area {size:.2f}"
+
+
+if __name__ == "__main__":
+    print(describe(2))
+"""
+
+
+class TestEditFile:
+    """edit_file as the model uses it, checking the whole file afterwards so
+    an edit that also changed something else fails. Only the file tools are
+    offered."""
+
+    def test_unique_replacement_leaves_the_rest_alone(
+        self, make_agent: Callable[..., Agent], tmp_path: Path
+    ) -> None:
+        path = tmp_path / "shapes.py"
+        path.write_text(PROGRAM)
+        turn = Turn(
+            file_tools(make_agent()),
+            "In shapes.py, use edit_file to change the format in describe from "
+            ":.2f to :.3f. Change nothing else.",
+        )
+        assert "edit_file" in turn.tools_called
+        assert path.read_text() == PROGRAM.replace(":.2f", ":.3f")
+
+    def test_multi_line_edit(
+        self, make_agent: Callable[..., Agent], tmp_path: Path
+    ) -> None:
+        path = tmp_path / "shapes.py"
+        path.write_text(PROGRAM)
+        Turn(
+            file_tools(make_agent()),
+            "In shapes.py, use edit_file to make area() raise ValueError('negative "
+            "radius') when radius is negative, before it returns. Change nothing else.",
+        )
+        text = path.read_text()
+        assert "raise ValueError('negative radius')" in text or (
+            'raise ValueError("negative radius")' in text
+        )
+        namespace: dict[str, object] = {}
+        exec(compile(text, "shapes.py", "exec"), namespace)
+        area = namespace["area"]
+        assert callable(area)
+        assert round(area(1), 5) == 3.14159
+        try:
+            area(-1)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("area(-1) did not raise")
+        # Only area() changed.
+        assert text.startswith("import math\n\n\ndef area(radius):\n")
+        assert (
+            text[text.index("def describe") :]
+            == PROGRAM[PROGRAM.index("def describe") :]
+        )
+
+    def test_one_of_several_identical_lines(
+        self, make_agent: Callable[..., Agent], tmp_path: Path
+    ) -> None:
+        path = tmp_path / "config.ini"
+        original = (
+            "[database]\nenabled = false\nhost = db.local\n\n"
+            "[cache]\nenabled = false\nhost = cache.local\n"
+        )
+        path.write_text(original)
+        turn = Turn(
+            file_tools(make_agent()),
+            "In config.ini, use edit_file to set enabled = true in the [cache] "
+            "section only. The [database] section must stay as it is.",
+        )
+        assert "edit_file" in turn.tools_called
+        assert path.read_text() == original.replace(
+            "[cache]\nenabled = false", "[cache]\nenabled = true"
+        )
+
+    def test_replace_all(
+        self, make_agent: Callable[..., Agent], tmp_path: Path
+    ) -> None:
+        path = tmp_path / "shapes.py"
+        path.write_text(PROGRAM)
+        Turn(
+            file_tools(make_agent()),
+            "In shapes.py, rename the parameter radius to r everywhere, using "
+            "edit_file with replace_all. Change nothing else.",
+        )
+        assert path.read_text() == PROGRAM.replace("radius", "r")
+
+    def test_deleting_lines(
+        self, make_agent: Callable[..., Agent], tmp_path: Path
+    ) -> None:
+        path = tmp_path / "shapes.py"
+        path.write_text(PROGRAM)
+        Turn(
+            file_tools(make_agent()),
+            "In shapes.py, use edit_file to delete the whole if __name__ == "
+            "'__main__' block at the end, including its print line. Change "
+            "nothing else.",
+        )
+        assert (
+            path.read_text().rstrip()
+            == PROGRAM[: PROGRAM.index("if __name__")].rstrip()
+        )
+
+    def test_tab_indented_file(
+        self, make_agent: Callable[..., Agent], tmp_path: Path
+    ) -> None:
+        path = tmp_path / "Makefile"
+        original = "build:\n\tgo build ./...\n\ntest:\n\tgo test ./...\n"
+        path.write_text(original)
+        Turn(
+            file_tools(make_agent()),
+            "In Makefile, use edit_file to change the test recipe to run "
+            "go test -race ./... instead. Keep the tab indentation.",
+        )
+        assert path.read_text() == original.replace(
+            "\tgo test ./...", "\tgo test -race ./..."
+        )
+
+    def test_non_ascii_edit(
+        self, make_agent: Callable[..., Agent], tmp_path: Path
+    ) -> None:
+        path = tmp_path / "greeting.txt"
+        path.write_text("Grüße aus München!\nSee you soon.\n", encoding="utf-8")
+        Turn(
+            file_tools(make_agent()),
+            "In greeting.txt, use edit_file to change München to Köln. Change "
+            "nothing else.",
+        )
+        assert path.read_text(encoding="utf-8") == "Grüße aus Köln!\nSee you soon.\n"
+
+    def test_crlf_file(self, make_agent: Callable[..., Agent], tmp_path: Path) -> None:
+        path = tmp_path / "settings.ini"
+        path.write_bytes(b"[main]\r\nretries = 2\r\ncolour = blue\r\n")
+        Turn(
+            file_tools(make_agent()),
+            "In settings.ini, change retries from 2 to 5 with edit_file. Change "
+            "nothing else.",
+        )
+        assert path.read_bytes() == b"[main]\r\nretries = 5\r\ncolour = blue\r\n"
