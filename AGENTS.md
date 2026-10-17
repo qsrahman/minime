@@ -1,19 +1,22 @@
 # AGENTS.md
 
 ## Project
-MiniMe is a small interactive coding agent in three flat modules (no package),
+MiniMe is a small interactive coding agent in five flat modules (no package),
 written as a handful of classes that get their dependencies through their
 constructors; there is no global state:
-- `config.py` — `Config` and `load_config()`, which reports invalid settings
-  and exits. `main()` calls it once and passes the result down.
+- `config.py` — `Config`. `main()` builds it once, reporting invalid settings
+  and exiting, and passes it down.
 - `tools.py` — `Workspace` (path checking), `Tool` (abstract base) with one
   subclass per tool, and `Toolbox` (`for_config()` builds the standard set,
   `schemas()`, `execute()`). The byte-bounding and HTML helpers stay plain
   functions. Imports `config` for the `Config` type only.
-- `main.py` — `Conversation` (history, token ratio, trimming), `Agent` (the
-  tool loop; prints nothing, reports through `on_text` / `on_notice` callbacks
-  and raises `TurnError`), `Repl` (terminal input and output) and `main()`.
-  Imports both; nothing imports `main`.
+- `agent.py` — the system prompt, `Conversation` (history, token ratio,
+  trimming) and `Agent` (the tool loop; prints nothing, reports through
+  `on_text` / `on_notice` callbacks and raises `TurnError`). Imports `config`
+  and `tools`.
+- `repl.py` — `Repl`, all terminal input and output. Imports `agent`.
+- `main.py` — the entry point: loads `Config` and runs `Repl(Agent(config))`.
+  Nothing imports `main`.
 
 ## Commands
 - `uv sync` — install dependencies.
@@ -36,6 +39,9 @@ constructors; there is no global state:
   False), `site` (a local HTTP server with per-test routes), `api` (see below),
   `tool_call` (a tool call for `Toolbox.execute`), and `kinds` (a
   one-label-per-item summary of `history` or of a request's input).
+- Patch a name in the module that looks it up: `"agent.system_prompt"`,
+  `"agent.date"` and `"agent.OpenAI"` for the agent, `main.Config` for the
+  entry point.
 - Build agents in tests with `api.agent()`, never `main.Agent(settings)`: an
   agent that makes its own OpenAI client sets up TLS, which on macOS starts a
   system thread that outlives the test and breaks the pty tests' fork.
@@ -98,7 +104,7 @@ constructors; there is no global state:
 - The response loop calls `client.responses.stream(..., store=False)` (or
   `.create` when `STREAMING=false`) and appends outputs to in-memory
   `history`; iterations are capped by `MAX_TURNS_PER_RUN`.
-- `Conversation` (in `main.py`) holds `history` and `tokens_per_byte`, and all
+- `Conversation` (in `agent.py`) holds `history` and `tokens_per_byte`, and all
   history changes go through it (`add_prompt`, `add_step`,
   `discard_unanswered`, `trim`, `clear`). The token limit is enforced in bytes:
   `Agent.run_turn` converts `max_history_tokens`

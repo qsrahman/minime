@@ -1,8 +1,7 @@
-import sys
 from pathlib import Path
 
 from openai.types.shared import ReasoningEffort
-from pydantic import DirectoryPath, Field, ValidationError
+from pydantic import DirectoryPath, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -61,15 +60,3 @@ class Config(BaseSettings):
         default_factory=Path.cwd,
         validation_alias="WORKSPACE_ROOT",
     )
-
-
-def load_config() -> Config:
-    """Load and validate the configuration, exiting with a readable error if it is invalid."""
-    try:
-        return Config()  # pyright: ignore[reportCallIssue]
-    except ValidationError as exc:
-        print("Configuration error:", file=sys.stderr)
-        for error in exc.errors():
-            field = ".".join(str(part) for part in error["loc"])
-            print(f"  - {field}: {error['msg']}", file=sys.stderr)
-        raise SystemExit(1) from None

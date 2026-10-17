@@ -11,8 +11,8 @@ import pytest
 from openai.types.responses import ResponseFunctionToolCall
 
 import config
-import main
 import tools
+from agent import Agent, Conversation
 
 # Texts the agent puts into history, checked by the tests.
 OMITTED_TOOL_OUTPUT = (
@@ -360,14 +360,14 @@ class Api:
             http_client=httpx2.Client(transport=httpx2.MockTransport(self.handle)),
         )
 
-    def agent(self, conversation: main.Conversation | None = None) -> main.Agent:
+    def agent(self, conversation: Conversation | None = None) -> Agent:
         """An Agent for the test's settings that talks to this endpoint.
 
         Tests always build agents this way: an Agent left to make its own
         client sets up TLS, which on macOS starts a system thread that outlives
         the test and makes the pseudo-terminal tests' fork unsafe.
         """
-        agent = main.Agent(self.settings, client=self.client)
+        agent = Agent(self.settings, client=self.client)
         if conversation is not None:
             agent.conversation = conversation
         return agent
