@@ -143,7 +143,6 @@ class Agent:
                     instructions,
                     overhead_bytes + json_bytes(context.history),
                     on_text,
-                    on_notice,
                 )
 
                 tool_calls = [
@@ -182,7 +181,6 @@ class Agent:
         instructions: str,
         request_bytes: int,
         on_text: Callable[[str], None],
-        on_notice: Callable[[str], None],
     ) -> Response:
         """Request one model response, passing its text to on_text.
 
@@ -195,11 +193,6 @@ class Agent:
                 for event in stream:
                     if event.type == "response.output_text.delta":
                         on_text(event.delta)
-                    elif (
-                        event.type == "response.output_item.added"
-                        and event.item.type == "reasoning"
-                    ):
-                        on_notice("thinking…")
                     elif (
                         event.type == "response.incomplete"
                         or event.type == "response.failed"

@@ -189,9 +189,8 @@ constructors; there is no global state:
   so `Agent._create_response` takes the response from that event; both
   statuses end the turn with a `TurnError`, which `Repl` reports. The incomplete case was confirmed against the real API; the
   failed case could not be produced there and is covered only by the fixture.
-- `[thinking…]` is printed when a stream adds a reasoning item, so it only
-  appears in streaming mode. `reasoning` is sent only when `REASONING_EFFORT`
-  is set.
+- Reasoning is not shown: nothing is printed while the model reasons.
+  `reasoning` is sent only when `REASONING_EFFORT` is set.
 - When `Context.trim` drops whole turns, `run_turn` calls
   `Agent._summarize` (unless `SUMMARIZE=false`). It only makes the request,
   built by the same `Agent._request` as every other one plus

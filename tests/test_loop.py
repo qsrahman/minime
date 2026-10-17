@@ -795,36 +795,9 @@ class TestFailedResponses:
 
 
 class TestThinking:
-    def test_reasoning_is_announced_while_streaming(
-        self, api: Api, settings: config.Config, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        settings.streaming = True
-        api.replies = [response_body(reasoning_item(), message_item("the answer"))]
-        run(api)
-        assert capsys.readouterr().out == "\n[thinking…]\nthe answer\n\n"
-
-    def test_each_reasoning_request_is_announced(
-        self, api: Api, settings: config.Config, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        settings.streaming = True
-        api.replies = [
-            response_body(reasoning_item("rs_1"), write("a")),
-            response_body(reasoning_item("rs_2"), message_item("done")),
-        ]
-        run(api)
-        assert capsys.readouterr().out == "\n[thinking…]\n[thinking…]\ndone\n\n"
-
-    def test_nothing_is_announced_without_reasoning(
+    def test_reasoning_is_not_announced(
         self, api: Api, streaming: bool, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        api.replies = [answer("the answer")]
-        run(api)
-        assert "thinking" not in capsys.readouterr().out
-
-    def test_nothing_can_be_announced_without_streaming(
-        self, api: Api, settings: config.Config, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        settings.streaming = False
         api.replies = [response_body(reasoning_item(), message_item("the answer"))]
         run(api)
         assert capsys.readouterr().out == "\nthe answer\n\n"
@@ -1064,6 +1037,6 @@ class TestNotices:
     ) -> None:
         repl = Repl(Api(settings).agent())
         repl.write("full line\n")
-        repl.notice("thinking…")
-        repl.notice("thinking…")
-        assert capsys.readouterr().out == "full line\n[thinking…]\n[thinking…]\n"
+        repl.notice("one")
+        repl.notice("two")
+        assert capsys.readouterr().out == "full line\n[one]\n[two]\n"

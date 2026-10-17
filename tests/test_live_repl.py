@@ -147,13 +147,15 @@ def test_ctrl_c_while_a_command_runs(
     assert "interrupt" in screen.lower()
 
 
-def test_ctrl_c_while_the_model_thinks(start: Callable[..., Terminal]) -> None:
+def test_ctrl_c_before_the_answer_starts(start: Callable[..., Terminal]) -> None:
     terminal = start(REASONING_EFFORT="high", STREAMING="true")
     terminal.type(
         "Think carefully, then answer: how many prime numbers are there between "
         "1000 and 1100? Show your reasoning."
     )
-    terminal.expect(r"\[thinking…\]", timeout=120)
+    # Nothing is shown while the model reasons, so press Ctrl-C as soon as the
+    # turn has started (Repl.ask prints a blank line), before any text arrives.
+    terminal.expect(r"reasoning\.\r\n\r\n$")
     terminal.type(CTRL_C)
     terminal.expect(PROMPT_AGAIN, timeout=15)
     assert "still here" in answer(terminal, "Reply with exactly: still here").lower()
