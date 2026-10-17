@@ -227,28 +227,6 @@ def _limit_for(agent: Agent, history_tokens: int) -> int:
     return fixed // 4 + history_tokens
 
 
-def test_web_fetch(make_agent: Callable[..., Agent]) -> None:
-    turn = Turn(
-        make_agent(),
-        "Use web_fetch on https://example.com and tell me the page's main heading.",
-    )
-    assert "web_fetch" in turn.tools_called
-    assert turn.says("Example Domain")
-
-
-def test_web_search(make_agent: Callable[..., Agent]) -> None:
-    agent = make_agent()
-    if "web_search" not in agent.toolbox.tools:
-        pytest.skip("BRAVE_API_KEY is not set")
-    turn = Turn(
-        agent,
-        "Use web_search to find the official website of the Python programming "
-        "language and tell me its domain.",
-    )
-    assert "web_search" in turn.tools_called
-    assert turn.says("python.org")
-
-
 def test_turn_limit_is_reported(
     make_agent: Callable[..., Agent], tmp_path: Path
 ) -> None:
@@ -752,3 +730,143 @@ class TestRunCommand:
             for result in results(turn)
         )
         assert time.monotonic() - started < 40
+
+
+def web_only(agent: Agent) -> Agent:
+    return only_tools(
+        agent, *(n for n in ("web_fetch", "web_search") if n in agent.toolbox.tools)
+    )
+
+
+FUNCTIONS_PAGE = "https://docs.python.org/3/library/functions.html"
+
+
+class TestWebFetch:
+    """web_fetch against real pages. Only the web tools are offered."""
+
+    def test_title_and_text(self, make_agent: Callable[..., Agent]) -> None:
+        turn = Turn(
+            web_only(make_agent()),
+            "Use web_fetch on https://example.com and tell me the page title and, "
+            "word for word, the first sentence of its text.",
+        )
+        fetched = [r for r in results(turn) if r.get("ok")]
+        assert fetched and fetched[0]["title"] == "Example Domain"
+        assert turn.says("Example Domain", "documentation examples")
+
+    def test_links_are_kept_and_resolved(
+        self, make_agent: Callable[..., Agent]
+    ) -> None:
+        turn = Turn(
+            web_only(make_agent()),
+            "Use web_fetch on https://docs.python.org/3/library/html.parser.html and "
+            "tell me the full URL that its 'Source code' link points to.",
+        )
+        assert turn.says("github.com/python/cpython")
+
+    def test_redirect_and_paging_into_a_long_page(
+        self, make_agent: Callable[..., Agent]
+    ) -> None:
+        """The page redirects, and the zip() section is near the end of about
+        100,000 characters, so the model has to continue with offset."""
+        turn = Turn(
+            web_only(make_agent()),
+            f"Use web_fetch on {FUNCTIONS_PAGE}. It is long: continue with offset "
+            "until you reach the section on zip(). Then tell me which exception "
+            "zip(..., strict=True) raises when the iterables have different lengths.",
+        )
+        offsets = [call.get("offset") or 0 for call in calls(turn, "web_fetch")]
+        assert max(offsets) > 80_000, offsets
+        final_urls = {r["url"] for r in results(turn) if r.get("ok")}
+        assert all(url.startswith("https://docs.python.org/") for url in final_urls)
+        assert final_urls != {FUNCTIONS_PAGE}  # the redirect was followed
+        assert turn.says("ValueError")
+
+    def test_json(self, make_agent: Callable[..., Agent]) -> None:
+        turn = Turn(
+            web_only(make_agent()),
+            "Use web_fetch on https://pypi.org/pypi/requests/json and tell me, word "
+            "for word, the package's summary field.",
+        )
+        assert turn.says("Python HTTP for Humans")
+
+    def test_missing_page(self, make_agent: Callable[..., Agent]) -> None:
+        turn = Turn(
+            web_only(make_agent()),
+            "Use web_fetch on https://example.com/definitely-missing-page-8812 and "
+            "tell me the HTTP status code it gave, as a number.",
+        )
+        assert any("404" in r.get("message", "") for r in results(turn))
+        assert turn.says("404")
+
+    def test_binary_content_is_refused(self, make_agent: Callable[..., Agent]) -> None:
+        turn = Turn(
+            web_only(make_agent()),
+            "Use web_fetch on https://www.python.org/static/img/python-logo.png and "
+            "tell me what happened.",
+        )
+        assert any(
+            "unsupported content type: image/png" in r.get("message", "")
+            for r in results(turn)
+        )
+
+
+class TestWebSearch:
+    """web_search against the real Brave API. Only the web tools are offered."""
+
+    @pytest.fixture
+    def agent(self, make_agent: Callable[..., Agent]) -> Agent:
+        agent = make_agent()
+        if "web_search" not in agent.toolbox.tools:
+            pytest.skip("BRAVE_API_KEY is not set")
+        return web_only(agent)
+
+    def test_finds_an_official_site(self, agent: Agent) -> None:
+        turn = Turn(
+            agent,
+            "Use web_search to find the official website of the uv Python package "
+            "manager by Astral, and tell me its documentation domain.",
+        )
+        assert "web_search" in turn.tools_called
+        found = [item["url"] for r in results(turn) for item in r.get("results", [])]
+        assert found and all(url.startswith("http") for url in found)
+        assert turn.says("astral.sh")
+
+    def test_site_operator(self, agent: Agent) -> None:
+        turn = Turn(
+            agent,
+            "Use web_search with the query: site:docs.python.org asyncio TaskGroup "
+            "and tell me the URL of the first result.",
+        )
+        found = [item["url"] for r in results(turn) for item in r.get("results", [])]
+        assert found
+        assert all("docs.python.org" in url for url in found), found
+
+    def test_count(self, agent: Agent) -> None:
+        turn = Turn(
+            agent,
+            "Use web_search with count set to 3 to search for: python pathlib "
+            "tutorial. Then just say how many results you got.",
+        )
+        assert any(call.get("count") == 3 for call in calls(turn, "web_search"))
+        sizes = [len(r.get("results", [])) for r in results(turn)]
+        assert sizes and all(1 <= size <= 3 for size in sizes), sizes
+
+    def test_descriptions_are_plain_text(self, agent: Agent) -> None:
+        turn = Turn(agent, "Use web_search for: python requests library")
+        items = [item for r in results(turn) for item in r.get("results", [])]
+        assert items
+        for item in items:
+            assert "<strong>" not in item["title"] + item["description"]
+            assert "&amp;" not in item["title"] + item["description"]
+
+    def test_search_then_fetch(self, agent: Agent) -> None:
+        turn = Turn(
+            agent,
+            "Find the uv documentation page about the uv sync command with "
+            "web_search, read it with web_fetch, and tell me in one sentence what "
+            "its --frozen option does.",
+        )
+        assert "web_search" in turn.tools_called
+        assert "web_fetch" in turn.tools_called
+        assert turn.says("lock")
