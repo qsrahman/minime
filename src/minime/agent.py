@@ -90,20 +90,6 @@ class Agent:
             {"effort": config.reasoning_effort} if config.reasoning_effort else omit
         )
         self.usage = Usage()
-        # Set by the terminal on Ctrl-C, alongside the KeyboardInterrupt.
-        self.stop_requested = False
-
-    def stop_if_requested(self) -> None:
-        """Raise KeyboardInterrupt if Ctrl-C was pressed during this turn.
-
-        Ctrl-C normally arrives as a KeyboardInterrupt wherever the program is,
-        but code that swallows exceptions can lose it: if it lands while the
-        SDK's pydantic models are built from a stream event, pydantic prints
-        "Exception ignored" and the answer carries on. This catches it at the
-        next safe point instead.
-        """
-        if self.stop_requested:
-            raise KeyboardInterrupt
 
     def instructions(self) -> str:
         """The system prompt plus details of the environment, which are kept
@@ -144,7 +130,6 @@ class Agent:
             self.tool_schemas
         )
         self.usage = Usage()
-        self.stop_requested = False
         prompt_message = context.add_prompt(prompt)
 
         try:
@@ -175,7 +160,6 @@ class Agent:
 
                 request_bytes = overhead_bytes + json_bytes(context.history)
                 response = self._create_response(instructions, on_text, on_notice)
-                self.stop_if_requested()
                 self._record_usage(response, request_bytes)
                 self._check_status(response)
 
@@ -187,7 +171,6 @@ class Agent:
                 results: list[dict[str, Any]] = []
                 try:
                     for call in tool_calls:
-                        self.stop_if_requested()
                         results.append(self.toolbox.execute(call))
                 finally:
                     # Record the step even when Ctrl-C interrupts a tool.
@@ -229,7 +212,6 @@ class Agent:
         ) as stream:
             unfinished = None
             for event in stream:
-                self.stop_if_requested()
                 if event.type == "response.output_text.delta":
                     on_text(event.delta)
                 elif (

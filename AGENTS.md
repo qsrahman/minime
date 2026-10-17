@@ -205,14 +205,13 @@ constructors; there is no global state:
   an API error, completed steps stay, tool calls that did not finish get
   an "Interrupted by the user." result, and a prompt with no completed step is removed;
   the exception then propagates to `Repl`, which reports it.
-- Ctrl-C during a turn: `Repl.ask` installs its own SIGINT handler, which sets
-  `Agent.stop_requested` as well as raising `KeyboardInterrupt`. The raise can
-  be lost: if it lands while pydantic builds the SDK's stream-event models,
-  pydantic swallows it ("Exception ignored") and the answer carried on (seen
-  live in 3 of 4 runs). `Agent.stop_if_requested()` therefore runs before each
-  stream event, after each response and before each tool call. `Repl.ask` also
-  silences unraisable `KeyboardInterrupt`s for the turn, so that case prints no
-  traceback; other unraisable errors still reach the previous hook.
+- Ctrl-C during a turn is a plain `KeyboardInterrupt`, caught by `Repl.ask`.
+  Known limitation: if it lands while the SDK validates a stream event,
+  `TypeAdapter.validate_python` (pydantic-core) loses it, Python prints
+  "Exception ignored … KeyboardInterrupt" and the answer carries on. It is
+  rare on slow streams but frequent on fast ones (5 of 8 live runs on
+  gpt-5.4-mini failed `test_ctrl_c_while_an_answer_streams`); each press is
+  an independent chance, so pressing it again normally stops the answer.
 - `Agent.usage` holds the token counts of the last turn; `Repl.ask` prints the
   `[Context: …]` line from it after reporting any error.
 - `.env` is gitignored but present locally, overriding the model and base URL to a

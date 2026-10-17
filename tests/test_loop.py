@@ -6,14 +6,10 @@ names, response parsing.
 """
 
 import json
-import os
-import signal
 import sys
-import time
 from datetime import date
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 import httpx2
 import openai
@@ -29,7 +25,7 @@ from conftest import (
     reasoning_item,
     response_body,
 )
-from minime import config, fs, main, shell
+from minime import config, main, shell
 from minime.agent import SUMMARY_REQUEST, SYSTEM_PROMPT, Agent, build_toolbox
 from minime.context import Context, json_bytes
 from minime.main import Repl
@@ -1140,132 +1136,3 @@ class TestNotices:
         repl.notice("thinking…")
         repl.notice("thinking…")
         assert capsys.readouterr().out == "full line\n[thinking…]\n[thinking…]\n"
-
-
-class TestLostInterrupts:
-    """Ctrl-C can be swallowed by code that catches every exception (pydantic
-    building stream events). The terminal then still sets stop_requested,
-    which the agent checks at the next safe point."""
-
-    def test_stream_stops_at_the_next_event(
-        self, api: Api, settings: config.Config
-    ) -> None:
-        settings.streaming = True
-        api.replies = [response_body(message_item("first half, second half"))]
-        agent = api.agent(Context(history=old_history()))
-        received: list[str] = []
-
-        def lose_interrupt(text: str) -> None:
-            received.append(text)
-            agent.stop_requested = True  # as if the KeyboardInterrupt was lost
-
-        with pytest.raises(KeyboardInterrupt):
-            agent.run_turn("new", on_text=lose_interrupt)
-        assert len(received) == 1  # the rest of the answer was not delivered
-        assert kinds(agent.context.history) == ["user:old"]
-
-    def test_tools_are_not_run_after_a_lost_interrupt(
-        self, api: Api, workspace: Path
-    ) -> None:
-        api.replies = [response_body(message_item("writing"), write("a"))]
-        agent = api.agent()
-
-        def lose_interrupt(text: str) -> None:
-            agent.stop_requested = True
-
-        with pytest.raises(KeyboardInterrupt):
-            agent.run_turn("new", on_text=lose_interrupt)
-        assert not (workspace / "out.txt").exists()
-
-    def test_remaining_tool_calls_are_skipped(
-        self, api: Api, workspace: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        agent = api.agent()
-        real_run = fs.WriteFileTool.run
-
-        def run_then_lose_interrupt(
-            self: fs.WriteFileTool, args: Any
-        ) -> dict[str, Any]:
-            result = real_run(self, args)
-            agent.stop_requested = True
-            return result
-
-        monkeypatch.setattr(fs.WriteFileTool, "run", run_then_lose_interrupt)
-        api.replies = [
-            response_body(write("a", "a.txt"), write("b", "b.txt")),
-            answer(),
-        ]
-        with pytest.raises(KeyboardInterrupt):
-            agent.run_turn("new")
-        assert (workspace / "a.txt").exists()
-        assert not (workspace / "b.txt").exists()
-        assert kinds(agent.context.history) == [
-            "user:new",
-            "call:a",
-            "call:b",
-            "output:a:ok",
-            "output:b:Interrupted by the user.",
-        ]
-        assert len(api.requests) == 1
-
-    def test_the_flag_is_cleared_for_the_next_turn(self, api: Api) -> None:
-        agent = api.agent()
-        agent.stop_requested = True
-        api.replies = [answer("fine")]
-        agent.run_turn("new")
-        assert agent.stop_requested is False
-
-    def test_repl_sets_the_flag_on_ctrl_c_and_restores_the_handler(
-        self, api: Api, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        agent = api.agent()
-        seen: list[bool] = []
-
-        def press_ctrl_c(prompt: str, **callbacks: Any) -> None:
-            try:
-                os.kill(os.getpid(), signal.SIGINT)
-                time.sleep(1)  # the handler raises before this ends
-            finally:
-                seen.append(agent.stop_requested)
-
-        agent.run_turn = press_ctrl_c  # type: ignore[method-assign]
-        before = signal.getsignal(signal.SIGINT)
-        Repl(agent).ask("go")
-        assert seen == [True]
-        assert "[Interrupted; returning to prompt]" in capsys.readouterr().out
-        assert signal.getsignal(signal.SIGINT) is before
-
-    def test_lost_interrupt_tracebacks_are_silenced_during_a_turn(
-        self, api: Api, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        agent = api.agent()
-        reported: list[str] = []
-
-        def lose_interrupts(prompt: str, **callbacks: Any) -> None:
-            # What pydantic does with an exception it cannot propagate.
-            sys.unraisablehook(
-                cast(
-                    Any,
-                    SimpleNamespace(
-                        exc_value=KeyboardInterrupt(), exc_type=KeyboardInterrupt
-                    ),
-                )
-            )
-            sys.unraisablehook(
-                cast(
-                    Any,
-                    SimpleNamespace(exc_value=ValueError("real"), exc_type=ValueError),
-                )
-            )
-
-        agent.run_turn = lose_interrupts  # type: ignore[method-assign]
-        before = sys.unraisablehook
-        try:
-            sys.unraisablehook = lambda unraisable: reported.append(
-                type(unraisable.exc_value).__name__
-            )
-            Repl(agent).ask("go")
-            # Only the lost Ctrl-C is dropped; anything else still reaches the hook.
-            assert reported == ["ValueError"]
-        finally:
-            sys.unraisablehook = before

@@ -1,7 +1,5 @@
-import signal
 import sys
 from collections.abc import Callable
-from types import FrameType
 
 from pydantic import ValidationError
 
@@ -65,16 +63,6 @@ class Repl:
     def ask(self, prompt: str) -> None:
         """Run one turn, printing its text as it arrives and reporting problems
         without leaving the loop."""
-        previous_handler = signal.signal(signal.SIGINT, self._interrupt)
-        previous_hook = sys.unraisablehook
-
-        def quiet_lost_interrupt(unraisable: sys.UnraisableHookArgs) -> None:
-            # A Ctrl-C swallowed by library code; stop_requested handles it,
-            # so its "Exception ignored" traceback is only noise.
-            if not isinstance(unraisable.exc_value, KeyboardInterrupt):
-                previous_hook(unraisable)
-
-        sys.unraisablehook = quiet_lost_interrupt
         print()
         try:
             self.agent.run_turn(prompt, on_text=self.write, on_notice=self.notice)
@@ -84,9 +72,6 @@ class Repl:
             self.notice("Interrupted; returning to prompt")
         except Exception as exc:  # noqa: BLE001
             self.notice(f"Agent error: {type(exc).__name__}: {exc}")
-        finally:
-            signal.signal(signal.SIGINT, previous_handler)
-            sys.unraisablehook = previous_hook
 
         usage = self.agent.usage
         if usage.context_tokens:
@@ -97,11 +82,6 @@ class Repl:
                 f"output: {usage.output_tokens:,} tokens"
             )
         print()
-
-    def _interrupt(self, signum: int, frame: FrameType | None) -> None:
-        """Ctrl-C during a turn: stop the agent even if the exception is lost."""
-        self.agent.stop_requested = True
-        raise KeyboardInterrupt
 
     def write(self, text: str) -> None:
         """Print model text, remembering whether the cursor is at a line start."""
