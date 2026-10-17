@@ -869,6 +869,12 @@ class TestThinking:
         assert capsys.readouterr().out == "the answer\n"
 
 
+def test_system_prompt_has_no_stray_escape_characters() -> None:
+    """A lone backslash in the prompt source (such as "\\frac" written as "\frac")
+    turns into a control character instead of the text that was meant."""
+    assert [c for c in main.system_prompt if ord(c) < 32 and c != "\n"] == []
+
+
 class TestMain:
     @pytest.fixture
     def repl(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
