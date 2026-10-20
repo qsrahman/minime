@@ -21,7 +21,7 @@ def test_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     assert settings.command_timeout == 30
     assert settings.reasoning_effort is None
     assert settings.summarize is True
-    assert settings.max_context_tokens == 200_000
+    assert settings.max_context_tokens == 64 * 1024
     assert settings.streaming is True
     assert settings.brave_api_key is None
 

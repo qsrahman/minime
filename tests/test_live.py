@@ -222,7 +222,7 @@ def test_old_turns_are_summarised_and_remembered(
 def _limit_for(agent: Agent, history_tokens: int) -> int:
     """A token limit leaving about history_tokens for history after the fixed
     part of every request (instructions and tool schemas)."""
-    fixed = len(agent.instructions()) + len(str(agent.tool_schemas))
+    fixed = len(agent._instructions()) + len(str(agent.tool_schemas))
     return fixed // 4 + history_tokens
 
 

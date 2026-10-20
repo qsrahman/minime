@@ -78,7 +78,7 @@ def old_history() -> list[Any]:
 def overhead(settings: config.Config) -> int:
     """Bytes sent with every request besides the history: instructions and tools."""
     agent = Api(settings).agent()
-    return len(agent.instructions().encode()) + json_bytes(agent.toolbox.schemas())
+    return len(agent._instructions().encode()) + json_bytes(agent.toolbox.schemas())
 
 
 def tokens_for(settings: config.Config, history_bytes: int) -> int:
@@ -102,7 +102,7 @@ class TestRequests:
 
         body = api.requests[0]
         assert body["model"] == "some-model"
-        assert body["instructions"] == Api(settings).agent().instructions()
+        assert body["instructions"] == Api(settings).agent()._instructions()
         assert body["store"] is False
         assert body.get("stream", False) is streaming
         assert body["input"] == [{"role": "user", "content": "hi"}]
@@ -811,7 +811,7 @@ def test_system_prompt_has_no_stray_escape_characters() -> None:
 
 class TestInstructions:
     def test_environment_is_described(self, settings: config.Config) -> None:
-        instructions = Api(settings).agent().instructions()
+        instructions = Api(settings).agent()._instructions()
         assert instructions.startswith(SYSTEM_PROMPT)
         assert f"- Working directory: {Path.cwd()}" in instructions
         assert f"- Current date: {date.today().isoformat()}" in instructions
@@ -827,7 +827,7 @@ class TestInstructions:
         assert (
             Api(settings)
             .agent()
-            .instructions()
+            ._instructions()
             .startswith('Reply with JSON like {"ok": true}.\n\nEnvironment:\n')
         )
 

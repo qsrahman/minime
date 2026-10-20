@@ -80,7 +80,7 @@ class Agent:
             {"effort": config.reasoning_effort} if config.reasoning_effort else omit
         )
 
-    def instructions(self) -> str:
+    def _instructions(self) -> str:
         """The system prompt plus details of the environment, which are kept
         last so the start of the prompt stays the same for the provider's cache."""
         return (
@@ -112,7 +112,7 @@ class Agent:
         config = self.config
         context = self.context
         # Built per turn so the date stays right in a long-running session.
-        instructions = self.instructions()
+        instructions = self._instructions()
         # Instructions and tool schemas go out with every request, so they count
         # against the token limit as well.
         overhead_bytes = len(instructions.encode("utf-8")) + json_bytes(

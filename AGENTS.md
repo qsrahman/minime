@@ -125,7 +125,7 @@ constructors; there is no global state:
   `src/minime/config.py`), wherever the agent is started from. That only
   works for the editable install; a copied install (a plain
   `uv tool install .`) has no `.env` and reads settings from the environment.
-- `SYSTEM_PROMPT` is plain text; `Agent.instructions()` appends an Environment
+- `SYSTEM_PROMPT` is plain text; `Agent._instructions()` appends an Environment
   section (working directory, OS, date), and `run_turn` rebuilds it every turn.
 - `read_file` opens files in text mode, so a CRLF file is shown with plain
   `\n`. `edit_file` matches exactly first and, only if that fails on a CRLF
@@ -186,7 +186,7 @@ constructors; there is no global state:
     minimum, so they are not cached on their own; caching starts once the
     conversation takes the request past 1,024 tokens. Keep that part static
     and keep per-session values in the Environment section, which
-    `Agent.instructions()` appends last.
+    `Agent._instructions()` appends last.
 - A streamed response that does not complete ends with a `response.incomplete`
   or `response.failed` event and the SDK's `get_final_response()` then raises,
   so `Agent._create_response` takes the response from that event; both

@@ -38,7 +38,7 @@ class Config(BaseSettings):
         validation_alias="COMMAND_TIMEOUT_SECONDS",
     )
     max_context_tokens: int = Field(
-        default=200_000,
+        default=64 * 1024,
         gt=0,
         validation_alias="MAX_CONTEXT_TOKENS",
     )
