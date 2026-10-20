@@ -33,6 +33,71 @@ together: one shows what the agent does, the other lets you stop it first.
    directories too, and cap its size so a large file cannot crowd out the
    history.
 
+## New tools
+
+Each is a `ToolArguments` model, a `Tool` subclass and a line in
+`build_toolbox`. Read-only tools will not need approval (item 2), which is
+much of their value. In order:
+
+1. **`search_files(pattern, path, glob)` and `list_files(path, glob)`.**
+   Read-only search across file contents and directory listing, skipping
+   `.git`, `node_modules` and similar, capped like the other tools. Models
+   now do this through `run_command` (`grep -rn`, `find`, `ls -R`), with
+   noisy output and platform-specific flags. Pure Python (`os.walk` and
+   `re`), or `rg` when it is installed.
+2. **`remember(note)` and `recall(query)`.** Memory across sessions in a
+   notes file such as `~/.minime/memory.md`, for preferences, project facts
+   and decisions; small notes could go straight into the instructions. Today
+   everything is lost when MiniMe exits.
+3. **`view_image(path)`.** Let the model see screenshots, diagrams and
+   photos, sent as a base64 data URL. First check whether a function result
+   can carry an image in the Responses API or it needs a separate input
+   item; local models may not support images.
+4. **MCP client.** Connect to MCP servers named in the config and offer
+   their tools through the `Toolbox` (GitHub, databases, calendars). Needs
+   the `mcp` SDK, a bridge to its async API, and care with strict mode,
+   since server schemas often are not strict.
+5. **`update_plan(steps)`.** A to-do list the model keeps for multi-step
+   tasks, shown to the user as a notice when it changes (like Codex's
+   `update_plan`).
+6. **`read_document(path)`.** Text from PDF and DOCX files, paged like
+   `read_file`; needs `pypdf` and `python-docx`.
+7. **`apply_patch(patch)`.** Several edits in one call, in the patch format
+   OpenAI's models are trained on; fewer round trips for edits in many
+   places.
+8. **`http_request(method, url, headers, body)`.** POST, PUT and JSON calls
+   to APIs, which `web_fetch` (GET only, converted to text) cannot make; a
+   side-effecting tool for approvals.
+
+Not worth a tool: a calculator (`python -c` through `run_command`), the date
+(in the Environment section), asking the user (the model can just ask),
+deleting or moving files (`rm`, `mv`), and sub-agents.
+
+## Concurrency
+
+1. **Run a step's read-only tool calls in parallel.** The model often asks
+   for several calls in one response (three `web_fetch`, four `read_file`);
+   `run_turn` runs them one after another, so a step takes the sum of their
+   times instead of the slowest. Run them in a `ThreadPoolExecutor` only when
+   every call in the step is read-only (a `read_only` flag on `Tool`, which
+   approvals need too), keeping results in call order; anything else stays
+   sequential. Reason: Ctrl-C only reaches the main thread, so a
+   `run_command` in a worker would not be killed, and side-effecting calls
+   could race. On Ctrl-C the unfinished calls are recorded as interrupted;
+   orphaned read-only calls end within their timeouts. About 20-30 lines.
+2. **Rewrite on asyncio** (`AsyncOpenAI`, async `httpx2`, asyncio
+   subprocesses), together with the TUI or MCP, which are both async-first.
+   Concurrency becomes `asyncio.gather` and cancelling becomes
+   `task.cancel()`, which reaches running commands too. Check whether it
+   fixes the lost Ctrl-C: `asyncio.run` cancels the main task on SIGINT
+   instead of raising `KeyboardInterrupt` wherever the code is, so the
+   cancellation should land at the next await, not inside pydantic-core's
+   validation (untested). Touches most of `agent.py`, `shell.py`, `web.py`
+   and the loop and terminal tests.
+3. **Not now: concurrent turns or sub-agents.** Typing while the agent works,
+   or agents splitting a task, needs a TUI, rules for shared history and cost
+   control.
+
 ## Later: a full-screen interface
 
 - **TUI:** a Textual app (`minime-tui`) beside the REPL, with streamed
