@@ -56,7 +56,7 @@ def run(
     """One turn as the terminal runs it: text and notices are printed, problems
     are reported rather than raised, and a blank line follows."""
     agent = api.agent(conversation or Context(history=history or []))
-    Repl(agent, agent.config.model).ask(prompt)
+    Repl(agent).ask(prompt)
     return agent.context
 
 
@@ -68,7 +68,7 @@ def turn(
 ) -> Context:
     """One turn through Agent.run_turn itself, so problems are raised."""
     agent = api.agent(conversation or Context(history=history or []))
-    repl = Repl(agent, agent.config.model)
+    repl = Repl(agent)
     agent.run_turn(prompt, on_text=repl.write, on_notice=repl.notice)
     return agent.context
 
@@ -815,6 +815,7 @@ class FakeAgent:
     """All that Repl uses of an agent: run_turn() and reset()."""
 
     def __init__(self) -> None:
+        self.model = "fake-model"
         self.prompts: list[str] = []
         self.resets = 0
 
@@ -835,11 +836,14 @@ class FakeAgent:
         self.resets += 1
 
 
-def repl_session(
-    monkeypatch: pytest.MonkeyPatch, *inputs: str | BaseException
-) -> FakeAgent:
-    """Run a Repl over a FakeAgent, typing these inputs at its prompt."""
-    queue = list(inputs)
+def repl_session[AgentT: (FakeAgent, Agent)](
+    monkeypatch: pytest.MonkeyPatch,
+    *inputs: str | BaseException,
+    agent: AgentT | None = None,
+) -> AgentT:
+    """Run a Repl, by default over a FakeAgent, typing these inputs at its
+    prompt; "/exit" is typed last unless the inputs end the session."""
+    queue = [*inputs, "/exit"]
 
     def fake_input(prompt: str) -> str:
         item = queue.pop(0)
@@ -848,9 +852,9 @@ def repl_session(
         return item
 
     monkeypatch.setattr("builtins.input", fake_input)
-    agent = FakeAgent()
-    Repl(cast(Agent, agent), "fake-model").run()
-    return agent
+    used = agent if agent is not None else FakeAgent()
+    Repl(cast(Agent, used)).run()
+    return cast(AgentT, used)
 
 
 class TestRepl:
@@ -867,9 +871,7 @@ class TestRepl:
         monkeypatch.setattr(
             main,
             "Repl",
-            lambda agent, model: SimpleNamespace(
-                run=lambda: built.update(agent=agent, model=model)
-            ),
+            lambda agent: SimpleNamespace(run=lambda: built.update(agent=agent)),
         )
         main.main()
         assert built["client"] == {
@@ -879,7 +881,7 @@ class TestRepl:
         agent = built["agent"]
         assert agent.client is built["client"]
         assert list(agent.toolbox.tools) == list(build_toolbox(settings).tools)
-        assert built["model"] == "wired-model"
+        assert agent.model == "wired-model"
 
     def test_banner_and_farewell(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -990,13 +992,218 @@ class TestRepl:
         assert agent.prompts == ["/usr/bin is missing"]
 
 
+class TestCommands:
+    """The slash commands that act on a real agent (see commands.py)."""
+
+    def test_help_shows_arguments(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repl_session(monkeypatch, "/help")
+        out = capsys.readouterr().out
+        for usage in ("/model [name]", "/effort [level]", "/cd <dir>", "/undo"):
+            assert f"  {usage} " in out
+
+    def test_command_without_its_argument(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        agent = repl_session(monkeypatch, "/cd")
+        assert "[Usage: /cd <dir>]" in capsys.readouterr().out
+        assert agent.prompts == []
+
+    def test_argument_to_a_command_that_takes_none(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        agent = repl_session(monkeypatch, "/reset now")
+        assert "[/reset takes no argument]" in capsys.readouterr().out
+        assert (agent.resets, agent.prompts) == (0, [])
+
+    def test_model_is_shown_and_switched(
+        self,
+        api: Api,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        api.replies = [answer()]
+        agent = repl_session(
+            monkeypatch, "/model", "/model other-model", "hi", agent=api.agent()
+        )
+        out = capsys.readouterr().out
+        assert "[Model: gpt-5.4-mini]" in out
+        assert "[Model set to other-model]" in out
+        assert agent.model == "other-model"
+        assert api.requests[0]["model"] == "other-model"
+
+    def test_effort_is_shown_set_and_cleared(
+        self,
+        api: Api,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        api.replies = [answer(), answer()]
+        repl_session(
+            monkeypatch,
+            "/effort",
+            "/effort HIGH",
+            "first",
+            "/effort default",
+            "second",
+            agent=api.agent(),
+        )
+        out = capsys.readouterr().out
+        assert "[Reasoning effort: model default]" in out
+        assert "[Reasoning effort set to high]" in out
+        assert api.requests[0]["reasoning"] == {"effort": "high"}
+        assert "reasoning" not in api.requests[1]
+
+    def test_unknown_effort_is_refused(
+        self,
+        api: Api,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        agent = repl_session(monkeypatch, "/effort extreme", agent=api.agent())
+        assert agent.reasoning_effort is None
+        assert "Unknown effort 'extreme'; use one of: none, minimal" in (
+            capsys.readouterr().out
+        )
+
+    def test_cd(
+        self,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        (workspace / "sub").mkdir()
+        repl_session(monkeypatch, "/cd sub")
+        assert Path.cwd() == (workspace / "sub").resolve()
+        assert f"[Working directory: {Path.cwd()}]" in capsys.readouterr().out
+
+    def test_cd_to_a_missing_directory_is_reported(
+        self,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        repl_session(monkeypatch, "/cd missing")
+        assert Path.cwd() == workspace.resolve()
+        assert "[/cd failed: FileNotFoundError:" in capsys.readouterr().out
+
+    def test_retry_sends_the_last_prompt_again(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        agent = repl_session(monkeypatch, "/retry", "give up", "/retry")
+        assert agent.prompts == ["give up", "give up"]
+        assert "[Nothing to retry]" in capsys.readouterr().out
+
+    def test_undo_removes_only_the_last_turn(
+        self,
+        api: Api,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        api.replies = [response_body(write("a")), answer(), answer()]
+        agent = repl_session(
+            monkeypatch, "one", "two", "/undo", "/undo", "/undo", agent=api.agent()
+        )
+        assert agent.context.history == []
+        out = capsys.readouterr().out
+        assert out.count("[Last turn removed]") == 2
+        assert "[Nothing to undo]" in out
+
+    def test_undo_keeps_earlier_turns(
+        self, api: Api, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        api.replies = [answer(), answer()]
+        agent = repl_session(monkeypatch, "one", "two", "/undo", agent=api.agent())
+        assert kinds(agent.context.history) == ["user:one", "message"]
+
+    def test_compact_replaces_the_history_with_a_summary(
+        self,
+        api: Api,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        api.replies = [answer("one done"), answer("They asked for one.")]
+        agent = repl_session(monkeypatch, "one", "/compact", agent=api.agent())
+        assert kinds(agent.context.history) == [
+            f"user:{SUMMARY_MARKER}\nThey asked for one."
+        ]
+        summary_request = api.requests[1]
+        assert kinds(summary_request["input"]) == [
+            "user:one",
+            "message",
+            f"user:{SUMMARY_REQUEST}",
+        ]
+        assert summary_request["tool_choice"] == "none"
+        assert "[History compacted]" in capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        ("reply", "notice"),
+        [
+            (
+                httpx2.Response(500, json={"error": {"message": "down"}}),
+                "[No summary (InternalServerError); the history is unchanged]",
+            ),
+            (
+                answer("  "),
+                "[The summary was empty or too large; the history is unchanged]",
+            ),
+            (KeyboardInterrupt(), "[Interrupted; returning to prompt]"),
+        ],
+        ids=["api-error", "empty", "interrupt"],
+    )
+    def test_failed_compact_keeps_the_history(
+        self,
+        api: Api,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        reply: Any,
+        notice: str,
+    ) -> None:
+        api.replies = [answer("one done"), reply]
+        agent = repl_session(monkeypatch, "one", "/compact", agent=api.agent())
+        assert kinds(agent.context.history) == ["user:one", "message"]
+        assert notice in capsys.readouterr().out
+
+    def test_compact_with_no_history(
+        self,
+        api: Api,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        repl_session(monkeypatch, "/compact", agent=api.agent())
+        assert api.requests == []
+        assert "[Nothing to compact]" in capsys.readouterr().out
+
+    def test_context(
+        self,
+        api: Api,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        api.replies = [answer(input_tokens=1234, cached_tokens=1000)]
+        agent = repl_session(
+            monkeypatch, "/context", "one", "/context", agent=api.agent()
+        )
+        out = capsys.readouterr().out
+        assert (
+            "[Context: limit 65,536 tokens, no request since the last change; "
+            "0 turns; 4.0 bytes per token]"
+        ) in out
+        per_token = 1 / agent.context.tokens_per_byte
+        assert (
+            "[Context: 1,234 of 65,536 tokens (2%), 1,000 cached; 1 turns; "
+            f"{per_token:.1f} bytes per token]"
+        ) in out
+
+
 class TestNotices:
     """How Repl lays out the model's text and its own bracketed notices."""
 
     def test_notice_after_text_starts_a_new_line(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        repl = Repl(cast(Agent, FakeAgent()), "fake-model")
+        repl = Repl(cast(Agent, FakeAgent()))
         repl.write("partial answer")
         repl.notice("Interrupted; returning to prompt")
         assert (
@@ -1007,7 +1214,7 @@ class TestNotices:
     def test_notice_at_a_line_start_adds_no_blank_line(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        repl = Repl(cast(Agent, FakeAgent()), "fake-model")
+        repl = Repl(cast(Agent, FakeAgent()))
         repl.write("full line\n")
         repl.notice("one")
         repl.notice("two")

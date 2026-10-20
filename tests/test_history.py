@@ -3,7 +3,7 @@ from typing import Any
 
 import pytest
 
-from conftest import OMITTED_TOOL_OUTPUT
+from conftest import OMITTED_TOOL_OUTPUT, SUMMARY_MARKER
 from minime.context import TRIM_TARGET, Context, json_bytes
 
 NO_LIMIT = 10**9
@@ -248,3 +248,34 @@ def test_implausible_ratios_are_bounded(input_tokens: int, expected: float) -> N
     context = Context()
     context.learn_tokens_per_byte(input_tokens, 1000)
     assert context.tokens_per_byte == expected
+
+
+def test_undo_drops_the_last_turn_only() -> None:
+    history = [user("one"), output("a", 10), user("two"), output("b", 10)]
+    context = Context(list(history))
+    assert context.undo()
+    assert context.history == history[:2]
+    assert context.undo()
+    assert context.history == []
+    assert not context.undo()
+
+
+def test_turns_counts_user_messages() -> None:
+    assert Context([user("one"), output("a", 10), user("two")]).turns() == 2
+    assert Context().turns() == 0
+
+
+def test_replace_with_summary() -> None:
+    context = Context([user("one"), output("a", 10)])
+    assert context.replace_with_summary("short", NO_LIMIT)
+    assert context.history == [user(f"{SUMMARY_MARKER}\nshort")]
+
+
+@pytest.mark.parametrize(("summary", "limit"), [("  ", NO_LIMIT), ("s" * 500, 100)])
+def test_replace_with_an_unusable_summary_keeps_the_history(
+    summary: str, limit: int
+) -> None:
+    history = [user("one"), output("a", 10)]
+    context = Context(list(history))
+    assert not context.replace_with_summary(summary, limit)
+    assert context.history == history

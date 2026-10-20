@@ -1,11 +1,11 @@
 import sys
-from collections.abc import Callable
 from typing import Any
 
 from openai import OpenAI
 from pydantic import ValidationError
 
 from minime.agent import Agent, TurnError
+from minime.commands import Command, standard_commands
 from minime.config import Config
 from minime.fs import EditFileTool, ReadFileTool, WriteFileTool
 from minime.shell import RunCommandTool
@@ -19,56 +19,70 @@ except ImportError:  # not available on Windows
 
 
 class Repl:
-    """The interactive terminal: reads prompts and prints what the agent says.
+    """The interactive terminal: reads prompts and slash commands and prints
+    what the agent says.
 
-    It uses only the agent's run_turn() and reset(), and TurnError.
+    It uses the agent's run_turn() and TurnError; the commands use a few
+    more of its methods and attributes.
     """
 
-    def __init__(self, agent: Agent, model: str) -> None:
+    def __init__(self, agent: Agent) -> None:
         self.agent = agent
-        self.model = model  # shown in the banner
         self.running = False
         self.at_line_start = True
-        # Each command maps to its handler and the description shown by /help.
-        self.commands: dict[str, tuple[Callable[[], None], str]] = {
-            "/clear": (self.clear, "clear the screen"),
-            "/exit": (self.stop, "end the session"),
-            "/help": (self.help, "list commands"),
-            "/quit": (self.stop, "end the session"),
-            "/reset": (self.reset, "clear the conversation history"),
+        self.last_prompt: str | None = None  # for /retry
+        self.commands: dict[str, Command] = {
+            name: command for command in standard_commands() for name in command.names
         }
 
     def run(self) -> None:
         """Read and handle prompts until the user quits."""
-
-        print(f"AI coding agent | model: {self.model}\nType /help to list commands.\n")
+        print(
+            f"AI coding agent | model: {self.agent.model}\n"
+            "Type /help to list commands.\n"
+        )
 
         self.running = True
         while self.running:
             try:
-                prompt = input("> ").strip()
+                line = input("> ").strip()
             except KeyboardInterrupt, EOFError:
                 print()  # Ctrl-C / Ctrl-D leave the cursor on the prompt line
                 break
-            if not prompt:
+            if not line:
                 continue
 
-            command = self.commands.get(prompt.lower())
+            name, _, arg = line.partition(" ")
+            command = self.commands.get(name.lower())
             if command:
-                handler, _ = command
-                handler()
+                self.run_command(name.lower(), command, arg.strip())
             # A single word starting with "/" is a mistyped command, not a
             # prompt; longer input such as "/usr/bin is missing" still goes
             # to the model.
-            elif prompt.startswith("/") and " " not in prompt:
-                print(f"[Unknown command: {prompt}. Type /help to list commands.]\n")
+            elif line.startswith("/") and " " not in line:
+                self.report(f"Unknown command: {line}. Type /help to list commands.")
             else:
-                self.ask(prompt)
+                self.ask(line)
         print("Bye.")
+
+    def run_command(self, name: str, command: Command, arg: str) -> None:
+        """Run a slash command, checking its argument and reporting failures."""
+        if arg and not command.argument:
+            self.report(f"{name} takes no argument")
+        elif command.argument.startswith("<") and not arg:
+            self.report(f"Usage: {name} {command.argument}")
+        else:
+            try:
+                command.run(self, arg)
+            except KeyboardInterrupt:
+                self.report("Interrupted; returning to prompt")
+            except Exception as exc:  # noqa: BLE001
+                self.report(f"{name} failed: {type(exc).__name__}: {exc}")
 
     def ask(self, prompt: str) -> None:
         """Run one turn, printing its text as it arrives and reporting problems
         without leaving the loop."""
+        self.last_prompt = prompt
         print()
         try:
             self.agent.run_turn(prompt, on_text=self.write, on_notice=self.notice)
@@ -92,28 +106,10 @@ class Repl:
             self.write("\n")
         print(f"[{text}]")
 
-    def help(self) -> None:
-        """List the available commands."""
-        width = max(len(name) for name in self.commands)
-        for name, (_, description) in self.commands.items():
-            print(f"  {name:<{width}}  {description}")
+    def report(self, text: str) -> None:
+        """Print a command's result as a notice followed by a blank line."""
+        self.notice(text)
         print()
-
-    def reset(self) -> None:
-        """Clear the conversation history."""
-        self.agent.reset()
-        print("[History reset]\n")
-
-    def clear(self) -> None:
-        """Clear the terminal screen; the history is kept."""
-        # Clear the screen and scrollback, then move the cursor home, like
-        # `clear`; not when output is redirected, where the codes are garbage.
-        if sys.stdout.isatty():
-            print("\033[2J\033[3J\033[H", end="", flush=True)
-
-    def stop(self) -> None:
-        """Leave the loop after the current command."""
-        self.running = False
 
 
 # pydantic-settings options that turn Config into command-line flags
@@ -155,7 +151,7 @@ def main() -> None:
 
     client = OpenAI(api_key=config.api_key, base_url=config.base_url)
     agent = Agent(config, client, build_toolbox(config))
-    Repl(agent, config.model).run()
+    Repl(agent).run()
 
 
 if __name__ == "__main__":

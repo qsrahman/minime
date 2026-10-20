@@ -2,7 +2,7 @@
 
 ## Project
 MiniMe is a small interactive coding agent: the package `minime` in
-`src/minime/` (eight modules), written as a handful of classes that get their dependencies through their
+`src/minime/` (nine modules), written as a handful of classes that get their dependencies through their
 constructors; there is no global state:
 - `config.py` — `Config`. `main()` builds it once, reporting invalid settings
   and exiting, and passes it down.
@@ -22,15 +22,18 @@ constructors; there is no global state:
   loop; prints nothing, reports through `on_text` / `on_notice` callbacks and
   raises `TurnError`). `Agent(config, client, toolbox)` is given its OpenAI
   client and tools; it imports only `config`, `context` and `tools`, never
-  the concrete tool modules.
+  the concrete tool modules. For the commands it also has `model` and
+  `reasoning_effort` (changeable between turns), `last_usage`, `reset()`,
+  `undo()` and `compact()`.
+- `commands.py` — the slash commands: the abstract `Command` base class, one
+  subclass per command and `standard_commands()`. Imports `Repl` only for
+  type checking.
 - `main.py` — the command line and the composition root: `Repl` (all
-  terminal input and output, and the slash commands in its `commands` table,
-  which `/help` lists), `build_toolbox(config)` (the standard tools),
-  `CLI_OPTIONS` and `main()`, which loads `Config` from flags, environment and
-  `.env` (reporting invalid settings), builds the client, toolbox and agent,
-  and runs `Repl(agent, config.model)`. `Repl` uses only the agent's
-  `run_turn()` and `reset()` and `TurnError`. Nothing imports `main` except
-  the tests.
+  terminal input and output; it dispatches slash commands to `commands.py`),
+  `build_toolbox(config)` (the standard tools), `CLI_OPTIONS` and `main()`,
+  which loads `Config` from flags, environment and `.env` (reporting invalid
+  settings), builds the client, toolbox and agent, and runs `Repl(agent)`.
+  Nothing imports `main` except the tests.
 
 ## Commands
 - `uv sync` — install dependencies.
@@ -82,9 +85,11 @@ constructors; there is no global state:
   `Agent.run_turn` directly (problems raised). There are no stand-in response objects, so
   these tests also catch SDK changes; keep them passing when upgrading `openai`.
   Use the `streaming` fixture to run a test in both modes. `TestRepl` drives
-  `Repl` over a `FakeAgent` (just `run_turn()` and `reset()`) via
+  `Repl` over a `FakeAgent` (`model`, `run_turn()` and `reset()`) via
   `repl_session(monkeypatch, *inputs)`; only `test_main_wires_up_the_agent`
-  goes through `main()`.
+  goes through `main()`. `TestCommands` passes a real agent on the fake
+  API (`repl_session(..., agent=api.agent())`) to check what the commands
+  change in the requests and history.
 - `tests/test_terminal.py` runs the real `main.main()` as a child process on a
   pseudo-terminal and types Ctrl-C / Ctrl-D at it, with a local HTTP server
   streaming scripted replies. It is the only test of real signal delivery; the
@@ -116,10 +121,16 @@ constructors; there is no global state:
   arguments itself and abort the turn on invalid ones), and the subclass
   docstring is the description sent to the model. `run` raises on bad input; `Toolbox.execute` turns any
   exception into `{"ok": False, "message": ...}`.
-- Adding a REPL command: add a method to `Repl` and an entry in
-  `Repl.commands` (the name, lower-case with a leading `/`, maps to the
-  handler and its `/help` description). Commands take no arguments; a single
-  unknown `/word` is reported, not sent to the model.
+- Adding a slash command: in `commands.py`, write a `Command` subclass with
+  `names` (lower case, with the `/`; the first is the main one), `argument`
+  (`""` for none, `"[x]"` optional, `"<x>"` required) and `run(repl, arg)`,
+  and add it to `standard_commands()`. Its docstring is the `/help` text.
+  `Repl.run_command` checks the argument against `argument` and reports any
+  exception or Ctrl-C from `run`; show results with `repl.report(...)`. A line
+  whose first word is a command runs it with the rest as the argument; a
+  single unknown `/word` is reported, and anything else goes to the model.
+  Agent state that a command changes goes through `Agent` methods, history
+  changes through `Context`.
 - Tool schemas use OpenAI `strict: True`, so every argument field must be
   required: declare optional ones as `X | None` with no default.
 - Config fields read the env var of the same name, case-insensitively

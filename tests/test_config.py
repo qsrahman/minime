@@ -159,7 +159,7 @@ def test_command_line_flags_override_the_environment(
     monkeypatch.setattr(
         main,
         "Repl",
-        lambda config, model: SimpleNamespace(run=lambda: started.append(config)),
+        lambda config: SimpleNamespace(run=lambda: started.append(config)),
     )
     main.main()
     [config] = started

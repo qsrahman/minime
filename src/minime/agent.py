@@ -4,13 +4,14 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from openai import Omit, OpenAI, OpenAIError, omit
+from openai import OpenAI, OpenAIError, omit
 from openai.types.responses import (
     Response,
     ResponseFunctionToolCall,
     ResponseInputParam,
+    ResponseUsage,
 )
-from openai.types.shared_params import Reasoning
+from openai.types.shared import ReasoningEffort
 
 from minime.config import Config
 from minime.context import Context, json_bytes
@@ -55,14 +56,46 @@ class Agent:
         self.toolbox = toolbox
         # Fixed for the agent's life, so built once.
         self.tool_schemas = self.toolbox.schemas()
-        # Left out unless configured, so endpoints without reasoning are unaffected.
-        self.reasoning: Reasoning | Omit = (
-            {"effort": config.reasoning_effort} if config.reasoning_effort else omit
-        )
+        # These two can be changed between turns (the /model and /effort commands).
+        self.model = config.model
+        self.reasoning_effort: ReasoningEffort = config.reasoning_effort
+        # Token counts of the last request, for /context; None until one is made.
+        self.last_usage: ResponseUsage | None = None
 
     def reset(self) -> None:
         """Start a new conversation; the learned tokens per byte still apply."""
         self.context.reset()
+        self.last_usage = None
+
+    def undo(self) -> bool:
+        """Remove the last turn from the history; returns whether there was one."""
+        self.last_usage = None
+        return self.context.undo()
+
+    def compact(self, on_notice: Callable[[str], None] = lambda text: None) -> bool:
+        """Replace the whole history with a model-written summary of it.
+
+        Returns whether it did. If the request fails, or the summary is empty
+        or too large, the history is left as it was.
+        """
+        if not self.context.history:
+            on_notice("Nothing to compact")
+            return False
+        instructions = self._instructions()
+        on_notice("Summarising the conversation…")
+        try:
+            summary = self._summarize(self.context.history, instructions)
+        except OpenAIError as exc:
+            on_notice(f"No summary ({type(exc).__name__}); the history is unchanged")
+            return False
+        max_bytes = self.context.byte_budget(
+            self.config.max_context_tokens, self._overhead_bytes(instructions)
+        )
+        if not self.context.replace_with_summary(summary, max_bytes):
+            on_notice("The summary was empty or too large; the history is unchanged")
+            return False
+        self.last_usage = None
+        return True
 
     def _instructions(self) -> str:
         """The system prompt plus details of the environment, which are kept
@@ -74,6 +107,11 @@ class Agent:
             f"- Operating system: {platform.platform()}\n"
             f"- Current date: {date.today().isoformat()}\n"
         )
+
+    def _overhead_bytes(self, instructions: str) -> int:
+        """What goes out with every request besides the history, and so counts
+        against the token limit as well: instructions and tool schemas."""
+        return len(instructions.encode("utf-8")) + json_bytes(self.tool_schemas)
 
     def run_turn(
         self,
@@ -97,11 +135,7 @@ class Agent:
         context = self.context
         # Built per turn so the date stays right in a long-running session.
         instructions = self._instructions()
-        # Instructions and tool schemas go out with every request, so they count
-        # against the token limit as well.
-        overhead_bytes = len(instructions.encode("utf-8")) + json_bytes(
-            self.tool_schemas
-        )
+        overhead_bytes = self._overhead_bytes(instructions)
         prompt_message = context.add_prompt(prompt)
 
         try:
@@ -111,7 +145,14 @@ class Agent:
                 )
                 dropped, trimmed, request_dropped = context.trim(max_bytes)
                 if dropped and config.summarize:
-                    self._summarize(dropped, max_bytes, instructions, on_notice)
+                    on_notice("Summarising earlier conversation to save space…")
+                    try:
+                        summary = self._summarize(dropped, instructions)
+                        context.add_summary(summary, max_bytes)
+                    except OpenAIError as exc:
+                        on_notice(
+                            f"No summary ({type(exc).__name__}); it was dropped instead"
+                        )
                 elif trimmed:
                     on_notice(
                         "Conversation history trimmed to fit "
@@ -151,11 +192,14 @@ class Agent:
         """The arguments every request shares, the summary one included, so
         they all start with the same prefix for the provider's cache."""
         return {
-            "model": self.config.model,
+            "model": self.model,
             "instructions": instructions,
             "input": input,
             "tools": self.tool_schemas,
-            "reasoning": self.reasoning,
+            # Left out unless set, so endpoints without reasoning are unaffected.
+            "reasoning": (
+                {"effort": self.reasoning_effort} if self.reasoning_effort else omit
+            ),
             "store": False,
         }
 
@@ -190,6 +234,7 @@ class Agent:
             if response.output_text:
                 on_text(response.output_text + "\n")
 
+        self.last_usage = response.usage
         if response.usage and response.usage.input_tokens:
             self.context.learn_tokens_per_byte(
                 response.usage.input_tokens, request_bytes
@@ -204,28 +249,20 @@ class Agent:
             raise TurnError(f"Response failed: {message}")
         return response
 
-    def _summarize(
-        self,
-        dropped: ResponseInputParam,
-        max_bytes: int,
-        instructions: str,
-        on_notice: Callable[[str], None],
-    ) -> None:
-        """Ask the model to summarise the dropped turns and put the summary in their place."""
-        on_notice("Summarising earlier conversation to save space…")
-        try:
-            # The same instructions, tools and reasoning setting as every other
-            # request: the dropped items were the start of the previous prompt,
-            # so the provider has nearly all of this one cached.
-            reply = self.client.responses.create(
-                **self._request(
-                    instructions,
-                    [*dropped, {"role": "user", "content": SUMMARY_REQUEST}],
-                ),
-                tool_choice="none",
-            )
-        except OpenAIError as exc:
-            on_notice(f"No summary ({type(exc).__name__}); it was dropped instead")
-            return
+    def _summarize(self, items: ResponseInputParam, instructions: str) -> str:
+        """Ask the model for a summary of these history items.
 
-        self.context.add_summary(reply.output_text, max_bytes)
+        Raises OpenAIError if the request fails; the caller decides what then
+        happens to the history.
+        """
+        # The same instructions, tools and reasoning setting as every other
+        # request: the items were the start of the previous prompt, so the
+        # provider has nearly all of this one cached.
+        reply = self.client.responses.create(
+            **self._request(
+                instructions,
+                [*items, {"role": "user", "content": SUMMARY_REQUEST}],
+            ),
+            tool_choice="none",
+        )
+        return reply.output_text

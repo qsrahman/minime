@@ -31,11 +31,18 @@ At the `>` prompt, describe a coding task, or enter a command:
 | Command | Effect |
 | --- | --- |
 | `/help` | List the commands. |
+| `/context` | Show how much of the context limit the last request used, how much of it was cached, the number of turns and the learned bytes per token. |
+| `/model [name]` | Show the model, or switch to another one for the rest of the session. |
+| `/effort [level]` | Show the reasoning effort, or set it: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `default` to leave it to the model. |
+| `/cd <dir>` | Change the working directory. |
+| `/retry` | Send the last prompt again. |
+| `/undo` | Remove the last turn from the conversation. |
+| `/compact` | Replace the conversation with a summary of it, to free space; it is kept unchanged if the summary fails. |
 | `/reset` | Start a new conversation without restarting (clears the history). |
 | `/clear` | Clear the screen; the conversation is kept. |
 | `/exit`, `/quit` | End the session. |
 
-Commands ignore case. A single word starting with `/` that is not a command is reported as unknown; input with spaces, such as `/usr/bin is missing`, goes to the model. Press Ctrl-C while the agent is working to stop the current request and return to the prompt; press it at the prompt to quit. With fast-streaming models a Ctrl-C during an answer is sometimes lost (Python prints "Exception ignored … KeyboardInterrupt" and the answer continues); press it again. Steps the agent had already completed stay in the conversation, so you can ask it to continue.
+Command names ignore case. A line that starts with a command runs it, with the rest of the line as its argument. A single word starting with `/` that is not a command is reported as unknown; other input, such as `/usr/bin is missing`, goes to the model. Press Ctrl-C while the agent is working to stop the current request and return to the prompt; press it at the prompt to quit. With fast-streaming models a Ctrl-C during an answer is sometimes lost (Python prints "Exception ignored … KeyboardInterrupt" and the answer continues); press it again. Steps the agent had already completed stay in the conversation, so you can ask it to continue.
 
 Conversation history is kept in memory for the duration of the process, limited by default to 65,536 tokens (see `MAX_CONTEXT_TOKENS`). That fits most models' context windows; raise it for models with a larger one, such as the default model's 400,000 tokens. The token limit covers everything sent with a request, including the instructions and tool definitions, and is checked using the token counts the model reports. Tokens the provider has cached still count toward the limit. When the limit is reached, history is cut back to three quarters of it, oldest requests first, and the model is asked for a short summary of what was removed, which takes their place; this costs one extra request and can be turned off with `SUMMARIZE=false`. If a single request is still too large, its oldest tool outputs are omitted; if even that is not enough, the request is stopped and the conversation history is cleared. Cutting back further than strictly needed keeps the following requests cacheable, since every cut invalidates the provider's cache.
 
@@ -84,7 +91,7 @@ Web pages and search results are passed to the model as they are. A page can con
 
 ## Development
 
-The project declares its runtime dependencies in `pyproject.toml`. Use `uv sync` to install them and `uv run minime` to start the agent from the project directory. The code is the `minime` package in `src/minime/`, eight modules: `config.py` (settings), `tools.py` (what all tools share: the `Tool` base class and the `Toolbox` that holds them), `fs.py`, `shell.py` and `web.py` (the file, command and web tools), `context.py` (`Context`, the conversation history), `agent.py` (`Agent`, the tool loop) and `main.py` (`Repl`, the terminal, and the entry point).
+The project declares its runtime dependencies in `pyproject.toml`. Use `uv sync` to install them and `uv run minime` to start the agent from the project directory. The code is the `minime` package in `src/minime/`, nine modules: `config.py` (settings), `tools.py` (what all tools share: the `Tool` base class and the `Toolbox` that holds them), `fs.py`, `shell.py` and `web.py` (the file, command and web tools), `context.py` (`Context`, the conversation history), `agent.py` (`Agent`, the tool loop), `commands.py` (the slash commands) and `main.py` (`Repl`, the terminal, and the entry point).
 
 Run the tests with:
 

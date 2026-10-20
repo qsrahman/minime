@@ -85,12 +85,12 @@ class Context:
             )
         )
 
-    def add_summary(self, summary: str, max_bytes: int) -> None:
+    def add_summary(self, summary: str, max_bytes: int) -> bool:
         """Put a summary of dropped turns at the start of the history.
 
         It is a user message, so a later trim() drops it like any turn and the
         next summary covers it. A summary that is empty or would push the
-        history past max_bytes is left out.
+        history past max_bytes is left out. Returns whether it was added.
         """
         summary = summary.strip()
         message: EasyInputMessageParam = {
@@ -98,8 +98,35 @@ class Context:
             "content": "[Summary of the earlier conversation, which was removed "
             f"to save space]\n{summary}",
         }
-        if summary and json_bytes([message, *self.history]) <= max_bytes:
-            self.history.insert(0, message)
+        if not summary or json_bytes([message, *self.history]) > max_bytes:
+            return False
+        self.history.insert(0, message)
+        return True
+
+    def replace_with_summary(self, summary: str, max_bytes: int) -> bool:
+        """Replace the whole history with a summary of it, unless the summary
+        is empty or does not fit; returns whether it did."""
+        previous = self.history[:]
+        self.history.clear()
+        if self.add_summary(summary, max_bytes):
+            return True
+        self.history[:] = previous
+        return False
+
+    def undo(self) -> bool:
+        """Drop the last turn: the last user message and everything after it.
+
+        Returns whether there was one to drop.
+        """
+        starts = [index for index, item in enumerate(self.history) if is_prompt(item)]
+        if not starts:
+            return False
+        del self.history[starts[-1] :]
+        return True
+
+    def turns(self) -> int:
+        """How many turns the history holds (a leading summary counts as one)."""
+        return sum(map(is_prompt, self.history))
 
     def discard_unanswered(self, prompt: EasyInputMessageParam) -> None:
         """Drop the turn's prompt if no step was recorded after it."""
