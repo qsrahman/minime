@@ -1,6 +1,5 @@
 import inspect
 from abc import ABC, abstractmethod
-from pathlib import Path
 from typing import Any, ClassVar
 
 from openai.types.responses import ResponseFunctionToolCall
@@ -9,23 +8,6 @@ from pydantic import BaseModel, ConfigDict
 
 # The most any tool returns at once; longer results come in parts or clipped.
 MAX_TOOL_OUTPUT_BYTES = 16 * 1024
-
-
-class Workspace:
-    """The directory the agent works in; tool paths must resolve inside it."""
-
-    def __init__(self, root: Path) -> None:
-        self.root = root.resolve()
-
-    def resolve(self, path: str) -> Path:
-        """Resolve a path and reject locations outside the workspace."""
-        file_path = Path(path)
-        resolved_path = (
-            file_path if file_path.is_absolute() else self.root / file_path
-        ).resolve()
-        if not resolved_path.is_relative_to(self.root):
-            raise ValueError(f"Path is outside the workspace: {path}")
-        return resolved_path
 
 
 class ToolArguments(BaseModel):

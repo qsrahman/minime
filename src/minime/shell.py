@@ -7,7 +7,7 @@ from typing import IO, Any
 
 from pydantic import Field
 
-from minime.tools import MAX_TOOL_OUTPUT_BYTES, Tool, ToolArguments, Workspace
+from minime.tools import MAX_TOOL_OUTPUT_BYTES, Tool, ToolArguments
 
 # Bytes set aside for the "[... N bytes omitted ...]" line in clipped output.
 OMISSION_MARKER_ROOM = 48
@@ -79,8 +79,7 @@ class RunCommandTool(Tool[RunCommandArguments]):
     name = "run_command"
     arguments_model = RunCommandArguments
 
-    def __init__(self, workspace: Workspace, default_timeout: int) -> None:
-        self.workspace = workspace
+    def __init__(self, default_timeout: int) -> None:
         self.default_timeout = default_timeout
 
     def run(self, args: RunCommandArguments) -> dict[str, Any]:
@@ -88,19 +87,13 @@ class RunCommandTool(Tool[RunCommandArguments]):
         if timeout <= 0:
             raise ValueError("timeout must be greater than zero")
 
-        working_directory = self.workspace.resolve(args.cwd or str(self.workspace.root))
-        if not working_directory.is_dir():
-            raise ValueError(
-                f"Command working directory is not a directory: {args.cwd}"
-            )
-
         process = subprocess.Popen(
             args.cmd,
             shell=True,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            cwd=working_directory,
+            cwd=args.cwd,
             start_new_session=os.name == "posix",
         )
         assert process.stdout is not None

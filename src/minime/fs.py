@@ -1,9 +1,10 @@
 from itertools import islice
+from pathlib import Path
 from typing import Any
 
 from pydantic import Field
 
-from minime.tools import MAX_TOOL_OUTPUT_BYTES, Tool, ToolArguments, Workspace
+from minime.tools import MAX_TOOL_OUTPUT_BYTES, Tool, ToolArguments
 
 
 class ReadFileArguments(ToolArguments):
@@ -36,9 +37,6 @@ class ReadFileTool(Tool[ReadFileArguments]):
     name = "read_file"
     arguments_model = ReadFileArguments
 
-    def __init__(self, workspace: Workspace) -> None:
-        self.workspace = workspace
-
     def run(self, args: ReadFileArguments) -> dict[str, Any]:
         if args.start_line is not None and args.start_line < 1:
             raise ValueError("start_line must be greater than zero")
@@ -53,7 +51,7 @@ class ReadFileTool(Tool[ReadFileArguments]):
         ):
             raise ValueError("end_line must be greater than or equal to start_line")
 
-        file_path = self.workspace.resolve(args.path)
+        file_path = Path(args.path)
         first_line = 1 if args.start_line is None else args.start_line
 
         lines: list[str] = []
@@ -108,11 +106,8 @@ class WriteFileTool(Tool[WriteFileArguments]):
     name = "write_file"
     arguments_model = WriteFileArguments
 
-    def __init__(self, workspace: Workspace) -> None:
-        self.workspace = workspace
-
     def run(self, args: WriteFileArguments) -> dict[str, Any]:
-        file_path = self.workspace.resolve(args.path)
+        file_path = Path(args.path)
         file_path.parent.mkdir(parents=True, exist_ok=True)
         mode = "a" if args.append else "w"
         with file_path.open(mode, encoding="utf-8") as file:
@@ -131,14 +126,11 @@ class EditFileTool(Tool[EditFileArguments]):
     name = "edit_file"
     arguments_model = EditFileArguments
 
-    def __init__(self, workspace: Workspace) -> None:
-        self.workspace = workspace
-
     def run(self, args: EditFileArguments) -> dict[str, Any]:
         if not args.old_content:
             raise ValueError("old_content must not be empty")
 
-        file_path = self.workspace.resolve(args.path)
+        file_path = Path(args.path)
         existing_content = file_path.read_text(encoding="utf-8", newline="")
 
         old_content, new_content = args.old_content, args.new_content

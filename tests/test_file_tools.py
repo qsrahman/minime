@@ -5,43 +5,6 @@ import pytest
 from conftest import Tools
 from minime import tools
 
-
-class TestResolveWorkspacePath:
-    def test_relative_path(self, workspace: Path) -> None:
-        assert (
-            tools.Workspace(workspace).resolve("a/b.txt")
-            == workspace.resolve() / "a" / "b.txt"
-        )
-
-    def test_absolute_path_inside(self, workspace: Path) -> None:
-        target = workspace.resolve() / "inside.txt"
-        assert tools.Workspace(workspace).resolve(str(target)) == target
-
-    def test_workspace_root_itself(self, workspace: Path) -> None:
-        assert tools.Workspace(workspace).resolve(".") == workspace.resolve()
-
-    @pytest.mark.parametrize(
-        "path", ["../outside.txt", "a/../../outside.txt", "/etc/hosts"]
-    )
-    def test_outside_is_rejected(self, workspace: Path, path: str) -> None:
-        with pytest.raises(ValueError, match="outside the workspace"):
-            tools.Workspace(workspace).resolve(path)
-
-    def test_sibling_with_same_prefix_is_rejected(self, workspace: Path) -> None:
-        sibling = workspace.parent / (workspace.name + "-other")
-        sibling.mkdir()
-        with pytest.raises(ValueError, match="outside the workspace"):
-            tools.Workspace(workspace).resolve(str(sibling / "x.txt"))
-
-    def test_symlink_escape_is_rejected(self, workspace: Path, tmp_path: Path) -> None:
-        outside = tmp_path / "outside"
-        outside.mkdir()
-        (outside / "secret.txt").write_text("secret")
-        (workspace / "link").symlink_to(outside, target_is_directory=True)
-        with pytest.raises(ValueError, match="outside the workspace"):
-            tools.Workspace(workspace).resolve("link/secret.txt")
-
-
 LIMIT = tools.MAX_TOOL_OUTPUT_BYTES
 
 
@@ -148,9 +111,13 @@ class TestReadFile:
         with pytest.raises(OSError):
             tool.read_file("sub")
 
-    def test_outside_workspace(self, tool: Tools) -> None:
-        with pytest.raises(ValueError, match="outside the workspace"):
-            tool.read_file("../x.txt")
+    def test_outside_workspace(self, tool: Tools, workspace: Path) -> None:
+        (workspace.parent / "x.txt").write_text("outside\n")
+        assert tool.read_file("../x.txt")["content"] == "outside\n"
+
+    def test_absolute_path(self, tool: Tools, tmp_path: Path) -> None:
+        (tmp_path / "abs.txt").write_text("absolute\n")
+        assert tool.read_file(str(tmp_path / "abs.txt"))["content"] == "absolute\n"
 
     def test_non_utf8_file(self, tool: Tools, workspace: Path) -> None:
         (workspace / "binary.bin").write_bytes(b"\xff\xfe\x00bad")
@@ -338,9 +305,8 @@ class TestWriteFile:
         assert (workspace / "empty.txt").read_text() == ""
 
     def test_outside_workspace(self, tool: Tools, workspace: Path) -> None:
-        with pytest.raises(ValueError, match="outside the workspace"):
-            tool.write_file("../escape.txt", "x")
-        assert not (workspace.parent / "escape.txt").exists()
+        tool.write_file("../escape.txt", "x")
+        assert (workspace.parent / "escape.txt").read_text() == "x"
 
 
 class TestEditFile:
@@ -482,6 +448,7 @@ class TestEditFile:
         with pytest.raises(FileNotFoundError):
             tool.edit_file("missing.txt", "a", "b")
 
-    def test_outside_workspace(self, tool: Tools) -> None:
-        with pytest.raises(ValueError, match="outside the workspace"):
-            tool.edit_file("../x.txt", "a", "b")
+    def test_outside_workspace(self, tool: Tools, workspace: Path) -> None:
+        (workspace.parent / "x.txt").write_text("a")
+        tool.edit_file("../x.txt", "a", "b")
+        assert (workspace.parent / "x.txt").read_text() == "b"

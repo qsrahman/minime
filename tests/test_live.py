@@ -33,17 +33,18 @@ SHELL_SETTINGS = {name: os.environ[name] for name in ENV_VARS if name in os.envi
 
 
 @pytest.fixture
-def make_agent(tmp_path: Path) -> Callable[..., Agent]:
+def make_agent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., Agent]:
     """An Agent for the .env settings, working in a temporary directory.
 
     Keyword arguments override settings by their environment variable names,
     for example make_agent(STREAMING=False).
     """
+    monkeypatch.chdir(tmp_path)
 
     def build(**overrides: Any) -> Agent:
         try:
             config = Config(  # pyright: ignore[reportCallIssue]
-                **{**SHELL_SETTINGS, "WORKSPACE_ROOT": tmp_path, **overrides}
+                **{**SHELL_SETTINGS, **overrides}
             )
         except ValidationError as exc:
             pytest.skip(f"no usable .env for live tests: {exc.error_count()} error(s)")
@@ -244,7 +245,7 @@ def test_step_limit_is_reported(
 def test_the_program_end_to_end(tmp_path: Path) -> None:
     """The agent as a user runs it, with input piped in."""
     try:
-        Config(**{**SHELL_SETTINGS, "WORKSPACE_ROOT": tmp_path})  # pyright: ignore[reportCallIssue]
+        Config(**SHELL_SETTINGS)  # pyright: ignore[reportCallIssue]
     except ValidationError:
         pytest.skip("no usable .env for live tests")
     (tmp_path / "note.txt").write_text("marker-7431\n")
@@ -254,7 +255,7 @@ def test_the_program_end_to_end(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
         cwd=tmp_path,
-        env={**os.environ, **SHELL_SETTINGS, "WORKSPACE_ROOT": str(tmp_path)},
+        env={**os.environ, **SHELL_SETTINGS},
         timeout=180,
     )
     assert result.returncode == 0, result.stderr
@@ -397,24 +398,18 @@ class TestWriteFile:
             "Café crème — 3,50 € — 咖啡"
         )
 
-    def test_writing_outside_the_workspace_is_refused(
+    def test_writing_outside_the_workspace(
         self, make_agent: Callable[..., Agent], tmp_path: Path
     ) -> None:
-        outside = tmp_path.parent / f"{tmp_path.name}-escape.txt"
-        turn = Turn(
-            file_tools(make_agent()),
-            f"Use write_file to write the word hello to the path {outside}",
-        )
-        assert not outside.exists()
-        # The model may decline on its own (the prompt names the workspace
-        # root); if it does try, the tool must refuse.
-        results = [
-            item["output"]
-            for item in turn.items
-            if isinstance(item, dict) and item.get("type") == "function_call_output"
-        ]
-        if "write_file" in turn.tools_called:
-            assert any("outside the workspace" in result for result in results)
+        outside = tmp_path.parent / f"{tmp_path.name}-outside.txt"
+        try:
+            Turn(
+                file_tools(make_agent()),
+                f"Use write_file to write the word hello to the path {outside}",
+            )
+            assert outside.read_text().strip().lower() == "hello"
+        finally:
+            outside.unlink(missing_ok=True)
 
     def test_a_longer_generated_file(
         self, make_agent: Callable[..., Agent], tmp_path: Path
@@ -676,23 +671,17 @@ class TestRunCommand:
         assert any(call.get("cwd") for call in calls(turn, "run_command"))
         assert turn.says("here.txt")
 
-    def test_working_directory_outside_the_workspace_is_refused(
+    def test_working_directory_outside_the_workspace(
         self, make_agent: Callable[..., Agent], tmp_path: Path
     ) -> None:
         turn = Turn(
             shell_only(make_agent()),
             f"Use run_command with cwd set to {tmp_path.parent} to run pwd.",
         )
-        # The model may decline on its own; if it tries, the tool must refuse.
-        for call, result in zip(
-            calls(turn, "run_command"), results(turn), strict=False
-        ):
-            if (
-                call.get("cwd")
-                and Path(call["cwd"]).resolve() == tmp_path.parent.resolve()
-            ):
-                assert result["ok"] is False
-                assert "outside the workspace" in result["message"]
+        assert any(
+            result["stdout"].strip() == str(tmp_path.parent.resolve())
+            for result in results(turn)
+        )
 
     def test_long_output_keeps_its_end(self, make_agent: Callable[..., Agent]) -> None:
         turn = Turn(

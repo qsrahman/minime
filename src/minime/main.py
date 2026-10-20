@@ -1,5 +1,6 @@
 import sys
 from collections.abc import Callable
+from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -33,7 +34,7 @@ class Repl:
         config = self.agent.config
         print(
             f"AI coding agent started | model: {config.model} | "
-            f"workspace: {config.workspace_root}\n"
+            f"directory: {Path.cwd()}\n"
             "Type /help to list commands.\n"
         )
 

@@ -39,7 +39,6 @@ ENV_VARS = (
     "MAX_HISTORY_TOKENS",
     "STREAMING",
     "BRAVE_API_KEY",
-    "WORKSPACE_ROOT",
 )
 
 
@@ -61,7 +60,8 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
 @pytest.fixture(autouse=True)
 def settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> config.Config:
-    """Give every test its own settings and workspace, isolated from .env and the shell.
+    """Give every test its own settings, isolated from .env and the shell, and
+    run it in its own empty workspace directory.
 
     Code under test reads these settings when it is built (a Toolbox, an
     Agent), so change them before building, not after.
@@ -70,18 +70,19 @@ def settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> config.Config:
         monkeypatch.delenv(name, raising=False)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    monkeypatch.chdir(workspace)
     test_settings = config.Config(
         _env_file=None,  # pyright: ignore[reportCallIssue]
         OPENAI_API_KEY="test-key",
-        WORKSPACE_ROOT=workspace,
         STREAMING=False,
     )
     return test_settings
 
 
 @pytest.fixture
-def workspace(settings: config.Config) -> Path:
-    return settings.workspace_root
+def workspace(settings: config.Config, tmp_path: Path) -> Path:
+    """The test's working directory, set up by the settings fixture."""
+    return tmp_path / "workspace"
 
 
 def call(tool: tools.Tool[Any], *args: Any, **kwargs: Any) -> dict[str, Any]:

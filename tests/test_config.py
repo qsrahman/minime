@@ -24,7 +24,6 @@ def test_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     assert settings.max_history_tokens == 200_000
     assert settings.streaming is True
     assert settings.brave_api_key is None
-    assert settings.workspace_root == Path.cwd()
 
 
 def test_environment_variables_map_to_fields(
@@ -41,7 +40,6 @@ def test_environment_variables_map_to_fields(
         "MAX_HISTORY_TOKENS": "1000",
         "STREAMING": "false",
         "BRAVE_API_KEY": "brave",
-        "WORKSPACE_ROOT": str(tmp_path),
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)
@@ -57,7 +55,6 @@ def test_environment_variables_map_to_fields(
     assert settings.max_history_tokens == 1000
     assert settings.streaming is False
     assert settings.brave_api_key == "brave"
-    assert settings.workspace_root == tmp_path
 
 
 def test_unknown_environment_variables_are_ignored(
@@ -89,13 +86,6 @@ def test_invalid_values_are_rejected(
     monkeypatch.setenv(name, value)
     with pytest.raises(ValidationError):
         make()
-
-
-def test_workspace_root_must_be_an_existing_directory(tmp_path: Path) -> None:
-    (tmp_path / "file.txt").write_text("x")
-    for bad in (tmp_path / "missing", tmp_path / "file.txt"):
-        with pytest.raises(ValidationError, match="WORKSPACE_ROOT"):
-            make(OPENAI_API_KEY="k", WORKSPACE_ROOT=bad)
 
 
 def test_api_key_is_required() -> None:
@@ -136,17 +126,6 @@ def test_env_file_values_are_not_exported(env_file: Path) -> None:
     assert Config().brave_api_key == "brave-file-key"
     assert "BRAVE_API_KEY" not in os.environ
     assert "OPENAI_API_KEY" not in os.environ
-
-
-def test_missing_workspace_is_reported_at_startup(
-    env_file: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    env_file.write_text("OPENAI_API_KEY=k\nWORKSPACE_ROOT=/definitely/not/here\n")
-    with pytest.raises(SystemExit):
-        main.main()
-    assert (
-        "WORKSPACE_ROOT: Path does not point to a directory" in capsys.readouterr().err
-    )
 
 
 def test_main_reports_configuration_errors_and_exits(

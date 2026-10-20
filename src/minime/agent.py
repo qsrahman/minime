@@ -1,6 +1,7 @@
 import platform
 from collections.abc import Callable
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 from openai import Omit, OpenAI, OpenAIError, omit
@@ -15,7 +16,7 @@ from minime.config import Config
 from minime.context import Context, json_bytes
 from minime.fs import EditFileTool, ReadFileTool, WriteFileTool
 from minime.shell import RunCommandTool
-from minime.tools import Tool, Toolbox, Workspace
+from minime.tools import Tool, Toolbox
 from minime.web import WebFetchTool, WebSearchTool
 
 SUMMARY_REQUEST = (
@@ -29,7 +30,7 @@ SYSTEM_PROMPT = """
 You are an expert AI coding agent.
 
 Operating rules:
-- Use paths relative to the workspace root. File tools reject paths outside it.
+- Relative paths start from the working directory.
 - Prefer the smallest correct change.
 - Validate with the smallest relevant command or check.
 - Do not make unnecessary edits or broad refactors.
@@ -45,12 +46,11 @@ Operating rules:
 
 def build_toolbox(config: Config) -> Toolbox:
     """The standard tools; web_search only when there is a key for it."""
-    workspace = Workspace(config.workspace_root)
     tools: list[Tool[Any]] = [
-        ReadFileTool(workspace),
-        WriteFileTool(workspace),
-        EditFileTool(workspace),
-        RunCommandTool(workspace, config.command_timeout),
+        ReadFileTool(),
+        WriteFileTool(),
+        EditFileTool(),
+        RunCommandTool(config.command_timeout),
         WebFetchTool(),
     ]
     if config.brave_api_key:
@@ -86,7 +86,7 @@ class Agent:
         return (
             f"{SYSTEM_PROMPT}\n"
             "Environment:\n"
-            f"- Workspace root: {self.config.workspace_root}\n"
+            f"- Working directory: {Path.cwd()}\n"
             f"- Operating system: {platform.platform()}\n"
             f"- Current date: {date.today().isoformat()}\n"
         )

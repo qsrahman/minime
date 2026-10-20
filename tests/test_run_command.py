@@ -147,15 +147,16 @@ class TestRunCommand:
             workspace.resolve() / "sub"
         )
 
-    def test_cwd_outside_the_workspace(self, tool: Tools) -> None:
-        with pytest.raises(ValueError, match="outside the workspace"):
-            tool.run_command("pwd", cwd="..")
+    def test_cwd_outside_the_workspace(self, tool: Tools, workspace: Path) -> None:
+        assert tool.run_command("pwd", cwd="..")["stdout"].strip() == str(
+            workspace.resolve().parent
+        )
 
     def test_cwd_must_be_a_directory(self, tool: Tools, workspace: Path) -> None:
         (workspace / "file.txt").write_text("x")
-        with pytest.raises(ValueError, match="not a directory"):
+        with pytest.raises(NotADirectoryError):
             tool.run_command("pwd", cwd="file.txt")
-        with pytest.raises(ValueError, match="not a directory"):
+        with pytest.raises(FileNotFoundError):
             tool.run_command("pwd", cwd="missing")
 
     @pytest.mark.parametrize("timeout", [0, -5])

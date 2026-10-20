@@ -813,7 +813,7 @@ class TestInstructions:
     def test_environment_is_described(self, settings: config.Config) -> None:
         instructions = Api(settings).agent().instructions()
         assert instructions.startswith(SYSTEM_PROMPT)
-        assert f"- Workspace root: {settings.workspace_root}" in instructions
+        assert f"- Working directory: {Path.cwd()}" in instructions
         assert f"- Current date: {date.today().isoformat()}" in instructions
         assert "- Operating system: " in instructions
         assert "untrusted data" in instructions
@@ -899,7 +899,7 @@ class TestRepl:
         repl["inputs"] = ["/exit"]
         main.main()
         out = capsys.readouterr().out
-        assert f"model: banner-model | workspace: {settings.workspace_root}" in out
+        assert f"model: banner-model | directory: {Path.cwd()}" in out
         assert "Type /help to list commands." in out
         assert out.endswith("\nGoodbye!\n")
         assert repl["client_kwargs"] == {

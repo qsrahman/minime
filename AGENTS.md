@@ -6,8 +6,8 @@ MiniMe is a small interactive coding agent: the package `minime` in
 constructors; there is no global state:
 - `config.py` — `Config`. `main()` builds it once, reporting invalid settings
   and exiting, and passes it down.
-- `tools.py` — what every tool shares: `MAX_TOOL_OUTPUT_BYTES`, `Workspace`
-  (path checking), `ToolArguments`, the abstract `Tool` base class and
+- `tools.py` — what every tool shares: `MAX_TOOL_OUTPUT_BYTES`,
+  `ToolArguments`, the abstract `Tool` base class and
   `Toolbox` (`schemas()`, `execute()`). Imports nothing from the project.
 - `fs.py` — `read_file`, `write_file` and `edit_file` (a `Tool` subclass and
   an arguments model each).
@@ -53,7 +53,9 @@ constructors; there is no global state:
   `"minime.agent.SYSTEM_PROMPT"`. Code that starts the agent as a process runs
   `python -m minime.main` with the venv's interpreter.
 - `tests/conftest.py` has an autouse `settings` fixture: every test gets its own
-  `Config` and a temporary workspace. Objects read their settings when they are
+  `Config` and runs in a temporary working directory (the `workspace`
+  fixture), since the tools take relative paths from the current directory.
+  Objects read their settings when they are
   built, so change `settings` before building a `Toolbox` or `Agent`.
 - Shared helpers there: `tool` (the standard tools for the test, callable like
   functions: `tool.read_file("f.txt", 3)`; arguments left out are None or
@@ -86,8 +88,8 @@ constructors; there is no global state:
   their real clients start threads that would break the pty tests' fork.
 - `tests/test_live_repl.py` (live) types at the real `minime` on a
   pseudo-terminal against the `.env` model: commands, memory and `/reset`,
-  Ctrl-C while an answer streams, while a command runs and while the model
-  thinks, a double Ctrl-C, and quitting. The shared `Terminal` helper is in
+  Ctrl-C while an answer streams, while a command runs and before the answer
+  starts, a double Ctrl-C, and quitting. The shared `Terminal` helper is in
   `conftest.py`; pseudo-terminal tests carry the `pty` marker and are sorted
   first within the offline and the live group, before real clients start
   threads.
@@ -113,17 +115,18 @@ constructors; there is no global state:
   env vars: `OPENAI_MODEL`→`model`, `MAX_STEPS_PER_TURN`→`max_steps`,
   `COMMAND_TIMEOUT_SECONDS`→`command_timeout`, `STREAMING`→`streaming`,
   `REASONING_EFFORT`→`reasoning_effort`, `SUMMARIZE`→`summarize`,
-  `MAX_HISTORY_TOKENS`→`max_history_tokens`, `WORKSPACE_ROOT`→`workspace_root`,
+  `MAX_HISTORY_TOKENS`→`max_history_tokens`,
   `BRAVE_API_KEY`→`brave_api_key`. Unknown env vars are ignored.
-- `workspace_root` defaults to the current working directory and must be an
-  existing directory (checked at startup); `.env` is read from the project
-  root (`parents[2]` of `src/minime/config.py`), wherever the agent is started
-  from. That only works for the editable install; a copied install (a plain
-  `uv tool install .`) has no `.env` and reads settings from the environment. `Workspace.resolve` restricts the file tools and
-  `run_command`'s `cwd` to it, but `run_command` itself runs with
-  `shell=True` and is not sandboxed.
+- The agent works in the directory it is started from: the tools use paths
+  as given, so relative ones (and `run_command`'s `cwd`) start from the
+  current directory. Nothing restricts them; they reach anywhere the user
+  can, and `run_command` runs with `shell=True`, unsandboxed.
+- `.env` is read from the project root (`parents[2]` of
+  `src/minime/config.py`), wherever the agent is started from. That only
+  works for the editable install; a copied install (a plain
+  `uv tool install .`) has no `.env` and reads settings from the environment.
 - `SYSTEM_PROMPT` is plain text; `Agent.instructions()` appends an Environment
-  section (workspace root, OS, date), and `run_turn` rebuilds it every turn.
+  section (working directory, OS, date), and `run_turn` rebuilds it every turn.
 - `read_file` opens files in text mode, so a CRLF file is shown with plain
   `\n`. `edit_file` matches exactly first and, only if that fails on a CRLF
   file, converts `old_content` / `new_content` to CRLF; keep the two in step.

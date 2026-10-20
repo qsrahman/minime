@@ -35,7 +35,7 @@ def start(tmp_path: Path) -> Iterator[Callable[..., Terminal]]:
     sessions: list[Terminal] = []
 
     def run(**overrides: str) -> Terminal:
-        settings = {**SHELL_SETTINGS, "WORKSPACE_ROOT": str(tmp_path), **overrides}
+        settings = {**SHELL_SETTINGS, **overrides}
         try:
             Config(**settings)  # pyright: ignore[reportCallIssue]
         except ValidationError:

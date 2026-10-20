@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from openai.types.shared import ReasoningEffort
-from pydantic import DirectoryPath, Field
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -57,8 +57,4 @@ class Config(BaseSettings):
     brave_api_key: str | None = Field(
         default=None,
         validation_alias="BRAVE_API_KEY",
-    )
-    workspace_root: DirectoryPath = Field(
-        default_factory=Path.cwd,
-        validation_alias="WORKSPACE_ROOT",
     )

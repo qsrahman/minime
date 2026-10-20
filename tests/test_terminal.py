@@ -121,7 +121,6 @@ def terminal(endpoint: Endpoint, workspace: Path) -> Iterator[Terminal]:
         **os.environ,
         "OPENAI_API_KEY": "test-key",
         "OPENAI_BASE_URL": endpoint.url,
-        "WORKSPACE_ROOT": str(workspace),
     }
     session = Terminal([sys.executable, "-c", LAUNCH], env, workspace)
     endpoint.start()

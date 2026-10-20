@@ -24,6 +24,8 @@ uv run minime
 
 Alternatively, put `OPENAI_API_KEY=your-api-key` in a `.env` file in the MiniMe directory. MiniMe loads that file automatically, wherever it is started from. Do not commit your API key.
 
+MiniMe works in the directory you start it from: relative paths and commands start there.
+
 At the `>` prompt, describe a coding task, or enter a command:
 
 | Command | Effect |
@@ -65,19 +67,18 @@ Configuration can be provided through environment variables or the `.env` file. 
 | `REASONING_EFFORT`        | No       | Model default     | `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`. |
 | `SUMMARIZE`               | No       | `true`            | Summarise history that is dropped to fit the limit.   |
 | `STREAMING`               | No       | `true`            | Print the response as it is generated.                |
-| `WORKSPACE_ROOT`          | No       | Current directory | Existing directory that file paths must stay inside.  |
 | `BRAVE_API_KEY`           | No       |                   | Brave Search API key. Enables the `web_search` tool.  |
 
 ## Agent tools
 
-- `read_file` reads a workspace file, optionally selecting a range of lines. Long files are returned up to 16 KB at a time, in whole lines, with the line number to continue from. A single line longer than that is returned in pieces. Whenever the file continues past what was returned, including after a requested line range, the result says where to continue.
-- `write_file` creates or replaces a workspace file, or appends to it.
+- `read_file` reads a file, optionally selecting a range of lines. Long files are returned up to 16 KB at a time, in whole lines, with the line number to continue from. A single line longer than that is returned in pieces. Whenever the file continues past what was returned, including after a requested line range, the result says where to continue.
+- `write_file` creates or replaces a file, or appends to it.
 - `edit_file` replaces a text fragment; by default, the fragment must occur exactly once. Files with Windows (CRLF) line endings can be edited with text copied from `read_file`, and keep their line endings. If the fragment is missing but matches apart from whitespace, the error says so.
-- `run_command` runs a shell command from the workspace, with an optional working directory and timeout. Commands get no standard input. stdout and stderr share a 16 KB limit; when a stream is clipped, its start and end are kept and the middle is omitted.
+- `run_command` runs a shell command from the current directory, with an optional working directory and timeout. Commands get no standard input. stdout and stderr share a 16 KB limit; when a stream is clipped, its start and end are kept and the middle is omitted.
 - `web_fetch` downloads a web page (up to 2 MB, within 20 seconds) and returns its text, 16 KB at a time. If the download exceeds 2 MB, the result sets `truncated` to `true`. HTML is reduced to readable text with links kept; navigation, headers, footers and sidebars are dropped.
 - `web_search` searches the web with the [Brave Search API](https://brave.com/search/api/). It is only offered to the model when `BRAVE_API_KEY` is set.
 
-File and working-directory paths are restricted to the workspace root. This is a path check, **not a security sandbox**: shell commands run with the same permissions as the current user and may access or modify other files or resources. Only use MiniMe with prompts and model providers you trust, and review commands and file changes carefully.
+The tools are **not restricted to that directory and not sandboxed**: files and shell commands can be read, written and run anywhere the current user has access. Only use MiniMe with prompts and model providers you trust, and review commands and file changes carefully.
 
 Web pages and search results are passed to the model as they are. A page can contain text written to steer the model, and the model can run shell commands without asking, so be careful which sites you point it at. `web_fetch` can also reach local and private addresses.
 

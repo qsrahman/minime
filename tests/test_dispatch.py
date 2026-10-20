@@ -181,15 +181,6 @@ class TestExecuteToolCall:
         assert result["ok"] is False
         assert result["message"].startswith("FileNotFoundError:")
 
-    def test_workspace_violations_become_results(self, toolbox: tools.Toolbox) -> None:
-        result = toolbox.execute(
-            tool_call("write_file", path="../x.txt", content="x", append=False)
-        )
-        assert result == {
-            "ok": False,
-            "message": "ValueError: Path is outside the workspace: ../x.txt",
-        }
-
     def test_web_search_without_a_key_is_an_unknown_tool(
         self, toolbox: tools.Toolbox
     ) -> None:
