@@ -154,9 +154,12 @@ def test_command_line_flags_override_the_environment(
         + ["--no-streaming", "--reasoning-effort", "low"],
     )
     started: list[Config] = []
-    monkeypatch.setattr(main, "Agent", lambda config: config)
+    monkeypatch.setattr(main, "OpenAI", lambda **kwargs: "client")
+    monkeypatch.setattr(main, "Agent", lambda config, client, toolbox: config)
     monkeypatch.setattr(
-        main, "Repl", lambda config: SimpleNamespace(run=lambda: started.append(config))
+        main,
+        "Repl",
+        lambda config, model: SimpleNamespace(run=lambda: started.append(config)),
     )
     main.main()
     [config] = started

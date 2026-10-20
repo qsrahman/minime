@@ -7,7 +7,7 @@ import pytest
 
 from conftest import raw_tool_call, tool_call
 from minime import config, fs, tools
-from minime.agent import build_toolbox
+from minime.main import build_toolbox
 
 ALL_TOOLS = [
     "read_file",

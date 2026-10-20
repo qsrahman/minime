@@ -14,10 +14,7 @@ from openai.types.shared_params import Reasoning
 
 from minime.config import Config
 from minime.context import Context, json_bytes
-from minime.fs import EditFileTool, ReadFileTool, WriteFileTool
-from minime.shell import RunCommandTool
-from minime.tools import Tool, Toolbox
-from minime.web import WebFetchTool, WebSearchTool
+from minime.tools import Toolbox
 
 SUMMARY_REQUEST = (
     "The conversation above is about to be removed to save space. Write a summary "
@@ -44,20 +41,6 @@ Operating rules:
 """
 
 
-def build_toolbox(config: Config) -> Toolbox:
-    """The standard tools; web_search only when there is a key for it."""
-    tools: list[Tool[Any]] = [
-        ReadFileTool(),
-        WriteFileTool(),
-        EditFileTool(),
-        RunCommandTool(config.command_timeout),
-        WebFetchTool(),
-    ]
-    if config.brave_api_key:
-        tools.append(WebSearchTool(config.brave_api_key))
-    return Toolbox(tools)
-
-
 class TurnError(Exception):
     """A turn that ended without a final answer; completed steps stay in the history."""
 
@@ -65,21 +48,21 @@ class TurnError(Exception):
 class Agent:
     """Runs the tool loop for each user turn. Prints nothing itself."""
 
-    def __init__(self, config: Config, client: OpenAI | None = None) -> None:
+    def __init__(self, config: Config, client: OpenAI, toolbox: Toolbox) -> None:
         self.config = config
-        self.client = client or OpenAI(
-            api_key=config.api_key,
-            base_url=config.base_url,
-        )
+        self.client = client
         self.context = Context()
-
-        self.toolbox = build_toolbox(config)
+        self.toolbox = toolbox
         # Fixed for the agent's life, so built once.
         self.tool_schemas = self.toolbox.schemas()
         # Left out unless configured, so endpoints without reasoning are unaffected.
         self.reasoning: Reasoning | Omit = (
             {"effort": config.reasoning_effort} if config.reasoning_effort else omit
         )
+
+    def reset(self) -> None:
+        """Start a new conversation; the learned tokens per byte still apply."""
+        self.context.reset()
 
     def _instructions(self) -> str:
         """The system prompt plus details of the environment, which are kept

@@ -13,11 +13,6 @@ class Config(BaseSettings):
         # the editable install `uv sync` makes; a copied install finds none.
         env_file=Path(__file__).parents[2] / ".env",
         extra="ignore",
-        # Command-line flags, when main() asks for them: --max-steps-per-turn 8,
-        # --no-streaming. They override the environment and .env.
-        cli_prog_name="minime",
-        cli_kebab_case=True,
-        cli_implicit_flags=True,
     )
     api_key: str = Field(
         min_length=1,

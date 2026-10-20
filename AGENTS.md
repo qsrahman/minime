@@ -20,12 +20,17 @@ constructors; there is no global state:
   reset), plus `json_bytes`.
 - `agent.py` — the system prompt, `TurnError` and `Agent` (the tool
   loop; prints nothing, reports through `on_text` / `on_notice` callbacks and
-  raises `TurnError`), plus `build_toolbox(config)`, which assembles the
-  standard tools. Imports `config`, `context` and the tool modules.
-- `main.py` — `Repl` (all terminal input and output, and the slash
-  commands in its `commands` table, which `/help` lists) and the entry point
-  `main()`, which loads `Config`, reporting invalid settings, and runs
-  `Repl(Agent(config))`. Nothing imports `main` except the tests.
+  raises `TurnError`). `Agent(config, client, toolbox)` is given its OpenAI
+  client and tools; it imports only `config`, `context` and `tools`, never
+  the concrete tool modules.
+- `main.py` — the command line and the composition root: `Repl` (all
+  terminal input and output, and the slash commands in its `commands` table,
+  which `/help` lists), `build_toolbox(config)` (the standard tools),
+  `CLI_OPTIONS` and `main()`, which loads `Config` from flags, environment and
+  `.env` (reporting invalid settings), builds the client, toolbox and agent,
+  and runs `Repl(agent, config.model)`. `Repl` uses only the agent's
+  `run_turn()` and `reset()` and `TurnError`. Nothing imports `main` except
+  the tests.
 
 ## Commands
 - `uv sync` — install dependencies.
@@ -63,13 +68,12 @@ constructors; there is no global state:
   `tool_call` (a tool call for `Toolbox.execute`), and `kinds` (a
   one-label-per-item summary of `history` or of a request's input).
 - Patch a name in the module that looks it up: `"minime.agent.SYSTEM_PROMPT"`,
-  `"minime.agent.date"` and `"minime.agent.OpenAI"` for the agent,
-  `main.Config` (with `from minime import main`) for the entry point; a
-  stand-in must accept keyword arguments, since `main()` calls
-  `Config(_cli_parse_args=True)`.
-- Build agents in tests with `api.agent()`, never `Agent(settings)`: an
-  agent that makes its own OpenAI client sets up TLS, which on macOS starts a
-  system thread that outlives the test and breaks the pty tests' fork.
+  `"minime.agent.date"` for the agent, `main.Config` and `main.OpenAI` (with
+  `from minime import main`) for the entry point; a `Config` stand-in must
+  accept keyword arguments, since `main()` passes `CLI_OPTIONS`.
+- Build agents in offline tests with `api.agent()`, which passes the fake
+  client: a real OpenAI client sets up TLS, which on macOS starts a system
+  thread that outlives the test and breaks the pty tests' fork.
 - The loop tests (`tests/test_loop.py`) run the real `openai` client: the
   `api` fixture answers its HTTP requests through `httpx2.MockTransport` from
   a script of `response_body(...)` replies, HTTP error responses or exceptions,
@@ -102,7 +106,7 @@ constructors; there is no global state:
 - Adding a tool: in `fs.py`, `shell.py`, `web.py` or a new module beside them,
   write a `ToolArguments` subclass for its parameters and a `Tool` subclass
   with `name`, `arguments_model` and `run(args)`, then add it in
-  `agent.build_toolbox`. Tool modules import only from `tools`, never from
+  `main.build_toolbox`. Tool modules import only from `tools`, never from
   each other or from `agent`, which keeps imports one-way. The schema is generated
   from the arguments model by the SDK's `openai.pydantic_responses_function_tool`
   (copied into a plain dict: with the model attached, the SDK would parse
@@ -122,7 +126,7 @@ constructors; there is no global state:
   `MAX_STEPS_PER_TURN`→`max_steps`,
   `COMMAND_TIMEOUT_SECONDS`→`command_timeout`. Unknown env vars are ignored.
 - Command-line flags come from pydantic-settings' CLI support, enabled only
-  by `main()` (`Config(_cli_parse_args=True)`), so other `Config()` calls never
+  by `main()` (`Config(**CLI_OPTIONS)`), so other `Config()` calls never
   read `sys.argv`; the autouse fixture also sets `sys.argv` to `["minime"]`.
   Flags are the env var names in kebab case (`--max-steps-per-turn`), booleans
   are `--x` / `--no-x`, and flags override the environment and `.env`.

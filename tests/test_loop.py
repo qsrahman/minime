@@ -26,9 +26,9 @@ from conftest import (
     response_body,
 )
 from minime import config, main, shell
-from minime.agent import SUMMARY_REQUEST, SYSTEM_PROMPT, Agent, build_toolbox
+from minime.agent import SUMMARY_REQUEST, SYSTEM_PROMPT, Agent
 from minime.context import Context, json_bytes
-from minime.main import Repl
+from minime.main import Repl, build_toolbox
 
 
 def write(call_id: str, path: str = "out.txt") -> dict[str, Any]:
@@ -54,7 +54,7 @@ def run(
     """One turn as the terminal runs it: text and notices are printed, problems
     are reported rather than raised, and a blank line follows."""
     agent = api.agent(conversation or Context(history=history or []))
-    Repl(agent).ask(prompt)
+    Repl(agent, agent.config.model).ask(prompt)
     return agent.context
 
 
@@ -66,7 +66,7 @@ def turn(
 ) -> Context:
     """One turn through Agent.run_turn itself, so problems are raised."""
     agent = api.agent(conversation or Context(history=history or []))
-    repl = Repl(agent)
+    repl = Repl(agent, agent.config.model)
     agent.run_turn(prompt, on_text=repl.write, on_notice=repl.notice)
     return agent.context
 
@@ -463,7 +463,7 @@ class TestInterruptsAndErrors:
         inputs = iter(["first", "second", "/exit"])
         monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
         monkeypatch.setattr(main, "Config", lambda **kwargs: api.settings)
-        monkeypatch.setattr("minime.agent.OpenAI", lambda **kwargs: api.client)
+        monkeypatch.setattr(main, "OpenAI", lambda **kwargs: api.client)
         main.main()
 
         out = capsys.readouterr().out
@@ -846,7 +846,7 @@ class TestRepl:
 
         monkeypatch.setattr("builtins.input", fake_input)
         monkeypatch.setattr(main, "Config", lambda **kwargs: settings)
-        monkeypatch.setattr("minime.agent.OpenAI", fake_openai)
+        monkeypatch.setattr(main, "OpenAI", fake_openai)
         monkeypatch.setattr(Agent, "run_turn", fake_run_turn)
         return state
 
@@ -979,7 +979,7 @@ class TestNotices:
     def test_notice_after_text_starts_a_new_line(
         self, settings: config.Config, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        repl = Repl(Api(settings).agent())
+        repl = Repl(Api(settings).agent(), "test-model")
         repl.write("partial answer")
         repl.notice("Interrupted; returning to prompt")
         assert (
@@ -990,7 +990,7 @@ class TestNotices:
     def test_notice_at_a_line_start_adds_no_blank_line(
         self, settings: config.Config, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        repl = Repl(Api(settings).agent())
+        repl = Repl(Api(settings).agent(), "test-model")
         repl.write("full line\n")
         repl.notice("one")
         repl.notice("two")

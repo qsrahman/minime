@@ -16,8 +16,9 @@ import pytest
 from openai.types.responses import ResponseFunctionToolCall
 
 from minime import config, tools
-from minime.agent import Agent, build_toolbox
+from minime.agent import Agent
 from minime.context import Context
+from minime.main import build_toolbox
 
 # Texts the agent puts into history, checked by the tests.
 OMITTED_TOOL_OUTPUT = (
@@ -390,7 +391,7 @@ class Api:
         client sets up TLS, which on macOS starts a system thread that outlives
         the test and makes the pseudo-terminal tests' fork unsafe.
         """
-        agent = Agent(self.settings, client=self.client)
+        agent = Agent(self.settings, self.client, build_toolbox(self.settings))
         if conversation is not None:
             agent.context = conversation
         return agent

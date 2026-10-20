@@ -19,11 +19,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from openai import OpenAI
 from pydantic import ValidationError
 
 from conftest import ENV_VARS
 from minime.agent import Agent, TurnError
 from minime.config import Config
+from minime.main import build_toolbox
 from minime.tools import Toolbox
 
 pytestmark = pytest.mark.live
@@ -48,7 +50,8 @@ def make_agent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[...,
             )
         except ValidationError as exc:
             pytest.skip(f"no usable .env for live tests: {exc.error_count()} error(s)")
-        return Agent(config)
+        client = OpenAI(api_key=config.api_key, base_url=config.base_url)
+        return Agent(config, client, build_toolbox(config))
 
     return build
 
@@ -162,7 +165,7 @@ def test_conversation_is_remembered(make_agent: Callable[..., Agent]) -> None:
 def test_reset_forgets(make_agent: Callable[..., Agent]) -> None:
     agent = make_agent()
     Turn(agent, "Remember this: my cat is called Biscuit. Just acknowledge it.")
-    agent.context.reset()
+    agent.reset()
     turn = Turn(
         agent,
         "Without using any tools: what is my cat called? If you do not know, "

@@ -1,10 +1,16 @@
 import sys
 from collections.abc import Callable
+from typing import Any
 
+from openai import OpenAI
 from pydantic import ValidationError
 
 from minime.agent import Agent, TurnError
 from minime.config import Config
+from minime.fs import EditFileTool, ReadFileTool, WriteFileTool
+from minime.shell import RunCommandTool
+from minime.tools import Tool, Toolbox
+from minime.web import WebFetchTool, WebSearchTool
 
 try:
     import readline  # noqa: F401  # line editing and history for input()
@@ -13,10 +19,14 @@ except ImportError:  # not available on Windows
 
 
 class Repl:
-    """The interactive terminal: reads prompts and prints what the agent says."""
+    """The interactive terminal: reads prompts and prints what the agent says.
 
-    def __init__(self, agent: Agent) -> None:
+    It uses only the agent's run_turn() and reset(), and TurnError.
+    """
+
+    def __init__(self, agent: Agent, model: str) -> None:
         self.agent = agent
+        self.model = model  # shown in the banner
         self.running = False
         self.at_line_start = True
         # Each command maps to its handler and the description shown by /help.
@@ -31,10 +41,7 @@ class Repl:
     def run(self) -> None:
         """Read and handle prompts until the user quits."""
 
-        config = self.agent.config
-        print(
-            f"AI coding agent | model: {config.model}\nType /help to list commands.\n"
-        )
+        print(f"AI coding agent | model: {self.model}\nType /help to list commands.\n")
 
         self.running = True
         while self.running:
@@ -94,7 +101,7 @@ class Repl:
 
     def reset(self) -> None:
         """Clear the conversation history."""
-        self.agent.context.reset()
+        self.agent.reset()
         print("[History reset]\n")
 
     def clear(self) -> None:
@@ -109,11 +116,36 @@ class Repl:
         self.running = False
 
 
+# pydantic-settings options that turn Config into command-line flags
+# (--max-steps-per-turn 8, --no-streaming); they override the environment
+# and .env. Only main() passes them, so no other Config() reads sys.argv.
+CLI_OPTIONS: dict[str, Any] = {
+    "_cli_parse_args": True,
+    "_cli_prog_name": "minime",
+    "_cli_kebab_case": True,
+    "_cli_implicit_flags": True,
+}
+
+
+def build_toolbox(config: Config) -> Toolbox:
+    """The standard tools; web_search only when there is a key for it."""
+    tools: list[Tool[Any]] = [
+        ReadFileTool(),
+        WriteFileTool(),
+        EditFileTool(),
+        RunCommandTool(config.command_timeout),
+        WebFetchTool(),
+    ]
+    if config.brave_api_key:
+        tools.append(WebSearchTool(config.brave_api_key))
+    return Toolbox(tools)
+
+
 def main() -> None:
     """Load the configuration, exiting with a readable error if it is invalid,
-    and run the terminal loop."""
+    then build the agent and run the terminal loop."""
     try:
-        config = Config(_cli_parse_args=True)  # pyright: ignore[reportCallIssue]
+        config = Config(**CLI_OPTIONS)
     except ValidationError as exc:
         print("Configuration error:", file=sys.stderr)
         for error in exc.errors():
@@ -121,7 +153,9 @@ def main() -> None:
             print(f"  - {field}: {error['msg']}", file=sys.stderr)
         raise SystemExit(1) from None
 
-    Repl(Agent(config)).run()
+    client = OpenAI(api_key=config.api_key, base_url=config.base_url)
+    agent = Agent(config, client, build_toolbox(config))
+    Repl(agent, config.model).run()
 
 
 if __name__ == "__main__":

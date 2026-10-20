@@ -6,7 +6,7 @@ import pytest
 
 from conftest import Site, Tools
 from minime import config, tools, web
-from minime.agent import build_toolbox
+from minime.main import build_toolbox
 
 LIMIT = tools.MAX_TOOL_OUTPUT_BYTES
 
