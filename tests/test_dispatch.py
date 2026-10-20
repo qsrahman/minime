@@ -93,7 +93,7 @@ class TestToolSchemas:
     def test_optional_arguments_are_nullable(self) -> None:
         properties = fs.ReadFileArguments.model_json_schema()["properties"]
         assert {"type": "null"} in properties["start_line"]["anyOf"]
-        assert {"type": "integer"} in properties["start_line"]["anyOf"]
+        assert {"type": "integer", "minimum": 1} in properties["start_line"]["anyOf"]
 
 
 class TestExecuteToolCall:

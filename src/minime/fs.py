@@ -9,10 +9,15 @@ from minime.tools import MAX_TOOL_OUTPUT_BYTES, Tool, ToolArguments
 
 class ReadFileArguments(ToolArguments):
     path: str = Field(description="Path to the file to read.")
-    start_line: int | None = Field(description="Optional 1-based first line to read.")
-    end_line: int | None = Field(description="Optional inclusive last line to read.")
+    start_line: int | None = Field(
+        ge=1, description="Optional 1-based first line to read."
+    )
+    end_line: int | None = Field(
+        ge=1, description="Optional inclusive last line to read."
+    )
     offset: int | None = Field(
-        description="Optional character position within start_line to continue from."
+        ge=0,
+        description="Optional character position within start_line to continue from.",
     )
 
 
@@ -38,12 +43,6 @@ class ReadFileTool(Tool[ReadFileArguments]):
     arguments_model = ReadFileArguments
 
     def run(self, args: ReadFileArguments) -> dict[str, Any]:
-        if args.start_line is not None and args.start_line < 1:
-            raise ValueError("start_line must be greater than zero")
-        if args.offset is not None and args.offset < 0:
-            raise ValueError("offset must not be negative")
-        if args.end_line is not None and args.end_line < 1:
-            raise ValueError("end_line must be greater than zero")
         if (
             args.start_line is not None
             and args.end_line is not None

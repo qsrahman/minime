@@ -273,7 +273,7 @@ class TestWebFetch:
         assert tool.web_fetch(url)["content"] == "ok � end"
 
     def test_negative_offset(self, tool: Tools, site: Site) -> None:
-        with pytest.raises(ValueError, match="offset must not be negative"):
+        with pytest.raises(ValueError, match="greater than or equal to 0"):
             tool.web_fetch(site.add("/p", "<p>x</p>"), -1)
         assert site.hits == []
 
@@ -430,11 +430,18 @@ class TestWebSearch:
         tool.web_search("q", count)
         assert brave["calls"][0]["params"]["count"] == count
 
-    @pytest.mark.parametrize("count", [0, -1, 21])
+    @pytest.mark.parametrize(
+        ("count", "message"),
+        [
+            (0, "greater than or equal to 1"),
+            (-1, "greater than or equal to 1"),
+            (21, "less than or equal to 20"),
+        ],
+    )
     def test_count_out_of_range(
-        self, tool: Tools, brave: dict[str, Any], count: int
+        self, tool: Tools, brave: dict[str, Any], count: int, message: str
     ) -> None:
-        with pytest.raises(ValueError, match="count must be between 1 and 20"):
+        with pytest.raises(ValueError, match=message):
             tool.web_search("q", count)
         assert brave["calls"] == []
 

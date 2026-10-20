@@ -72,10 +72,6 @@ class Context:
             )
         )
 
-    def restore(self, dropped: ResponseInputParam) -> None:
-        """Put turns that trim() dropped back at the start of the history."""
-        self.history[:0] = dropped
-
     def add_summary(self, summary: str, max_bytes: int) -> None:
         """Put a summary of dropped turns at the start of the history.
 

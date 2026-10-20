@@ -244,9 +244,6 @@ class Agent:
                 ),
                 tool_choice="none",
             )
-        except KeyboardInterrupt:
-            self.context.restore(dropped)
-            raise
         except OpenAIError as exc:
             on_notice(f"No summary ({type(exc).__name__}); it was dropped instead")
             return

@@ -150,13 +150,15 @@ def fetch_page(url: str) -> tuple[str, str, str, bool]:
 class WebFetchArguments(ToolArguments):
     url: str = Field(description="The http or https URL to fetch.")
     offset: int | None = Field(
-        description="Optional character position to continue reading from."
+        ge=0, description="Optional character position to continue reading from."
     )
 
 
 class WebSearchArguments(ToolArguments):
     query: str = Field(description="The search query.")
-    count: int | None = Field(description="Number of results, 1 to 20. Defaults to 5.")
+    count: int | None = Field(
+        ge=1, le=20, description="Number of results, 1 to 20. Defaults to 5."
+    )
 
 
 class WebFetchTool(Tool[WebFetchArguments]):
@@ -172,8 +174,6 @@ class WebFetchTool(Tool[WebFetchArguments]):
 
     def run(self, args: WebFetchArguments) -> dict[str, Any]:
         offset = args.offset or 0
-        if offset < 0:
-            raise ValueError("offset must not be negative")
         # Only continuation calls reuse the last download; a first part is always
         # fetched fresh, so a page that changed is never served stale.
         if not offset or self.last_page is None or self.last_page[0] != args.url:
@@ -209,8 +209,6 @@ class WebSearchTool(Tool[WebSearchArguments]):
 
     def run(self, args: WebSearchArguments) -> dict[str, Any]:
         count = 5 if args.count is None else args.count
-        if not 1 <= count <= 20:
-            raise ValueError("count must be between 1 and 20")
 
         response = httpx2.get(
             BRAVE_SEARCH_URL,

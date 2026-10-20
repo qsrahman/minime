@@ -17,7 +17,7 @@ constructors; there is no global state:
   helpers and their limits.
 - `context.py` — `Context`: the history and the learned tokens per byte, with
   every change to the history (adding prompts, steps and summaries, trimming,
-  restoring, reset), plus `json_bytes`.
+  reset), plus `json_bytes`.
 - `agent.py` — the system prompt, `TurnError` and `Agent` (the tool
   loop; prints nothing, reports through `on_text` / `on_notice` callbacks and
   raises `TurnError`), plus `build_toolbox(config)`, which assembles the
@@ -111,12 +111,16 @@ constructors; there is no global state:
   unknown `/word` is reported, not sent to the model.
 - Tool schemas use OpenAI `strict: True`, so every argument field must be
   required: declare optional ones as `X | None` with no default.
-- Config uses `pydantic-settings` `validation_alias`, so field names differ from
-  env vars: `OPENAI_MODEL`→`model`, `MAX_STEPS_PER_TURN`→`max_steps`,
-  `COMMAND_TIMEOUT_SECONDS`→`command_timeout`, `STREAMING`→`streaming`,
-  `REASONING_EFFORT`→`reasoning_effort`, `SUMMARIZE`→`summarize`,
-  `MAX_CONTEXT_TOKENS`→`max_context_tokens`,
-  `BRAVE_API_KEY`→`brave_api_key`. Unknown env vars are ignored.
+- Config fields read the env var of the same name, case-insensitively
+  (`STREAMING`→`streaming`); `Config(STREAMING=False)` works too. Where the
+  names differ, `validation_alias` maps them: `OPENAI_API_KEY`→`api_key`,
+  `OPENAI_MODEL`→`model`, `OPENAI_BASE_URL`→`base_url`,
+  `MAX_STEPS_PER_TURN`→`max_steps`,
+  `COMMAND_TIMEOUT_SECONDS`→`command_timeout`. Unknown env vars are ignored.
+- Bounds on tool arguments go in the arguments model (`Field(ge=1)`), not in
+  `run`: strict mode sends them to the model as `minimum` / `maximum`, which
+  it honours (checked on gpt-5.4-mini), and pydantic rejects out-of-range
+  values from endpoints that ignore the schema.
 - The agent works in the directory it is started from: the tools use paths
   as given, so relative ones (and `run_command`'s `cwd`) start from the
   current directory. Nothing restricts them; they reach anywhere the user
@@ -200,9 +204,8 @@ constructors; there is no global state:
   `tool_choice="none"`, to stay on the cached prefix. The history side is
   `Context`'s: `add_summary` inserts the result as a leading user message
   starting with "[Summary of the earlier conversation…]" (so a later trim
-  folds it into the next summary) unless it is empty or would not fit, and
-  `restore` puts the dropped turns back after Ctrl-C. A failed request falls
-  back to dropping. Nothing outside `Context` changes `history` directly.
+  folds it into the next summary) unless it is empty or would not fit. A
+  failed or interrupted request falls back to dropping. Nothing outside `Context` changes `history` directly.
 - `Context.add_step` records a model response and all of its tool outputs
   together, so history never holds a tool call without an output. On Ctrl-C or
   an API error, completed steps stay, tool calls that did not finish get

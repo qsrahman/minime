@@ -161,7 +161,7 @@ class TestRunCommand:
 
     @pytest.mark.parametrize("timeout", [0, -5])
     def test_timeout_must_be_positive(self, tool: Tools, timeout: int) -> None:
-        with pytest.raises(ValueError, match="timeout must be greater than zero"):
+        with pytest.raises(ValueError, match="greater than or equal to 1"):
             tool.run_command("echo hi", timeout=timeout)
 
     def test_stdin_is_not_inherited(self, tool: Tools) -> None:

@@ -37,24 +37,10 @@ class Config(BaseSettings):
         gt=0,
         validation_alias="COMMAND_TIMEOUT_SECONDS",
     )
-    max_context_tokens: int = Field(
-        default=64 * 1024,
-        gt=0,
-        validation_alias="MAX_CONTEXT_TOKENS",
-    )
-    reasoning_effort: ReasoningEffort = Field(
-        default=None,
-        validation_alias="REASONING_EFFORT",
-    )
-    summarize: bool = Field(
-        default=True,
-        validation_alias="SUMMARIZE",
-    )
-    streaming: bool = Field(
-        default=True,
-        validation_alias="STREAMING",
-    )
-    brave_api_key: str | None = Field(
-        default=None,
-        validation_alias="BRAVE_API_KEY",
-    )
+    # These fields read the environment variable of the same name (matched
+    # case-insensitively), so they need no alias.
+    max_context_tokens: int = Field(default=64 * 1024, gt=0)
+    reasoning_effort: ReasoningEffort = None
+    summarize: bool = True
+    streaming: bool = True
+    brave_api_key: str | None = None

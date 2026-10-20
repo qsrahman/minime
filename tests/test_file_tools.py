@@ -85,9 +85,9 @@ class TestReadFile:
     @pytest.mark.parametrize(
         ("start", "end", "message"),
         [
-            (0, None, "start_line must be greater than zero"),
-            (-1, None, "start_line must be greater than zero"),
-            (None, 0, "end_line must be greater than zero"),
+            (0, None, "start_line\n  Input should be greater than or equal to 1"),
+            (-1, None, "start_line\n  Input should be greater than or equal to 1"),
+            (None, 0, "end_line\n  Input should be greater than or equal to 1"),
             (5, 4, "end_line must be greater than or equal to start_line"),
         ],
     )
@@ -245,7 +245,7 @@ class TestReadFile:
 
     def test_negative_offset(self, tool: Tools, workspace: Path) -> None:
         (workspace / "f.txt").write_text("abc\n")
-        with pytest.raises(ValueError, match="offset must not be negative"):
+        with pytest.raises(ValueError, match="greater than or equal to 0"):
             tool.read_file("f.txt", 1, None, -1)
 
     def test_overlong_line_pieces_are_cut_between_characters(

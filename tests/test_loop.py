@@ -722,12 +722,12 @@ class TestSummaries:
             in capsys.readouterr().out
         )
 
-    def test_interrupt_while_summarising_restores_the_history(
+    def test_interrupt_while_summarising_drops_the_turns(
         self, api: Api, capsys: pytest.CaptureFixture[str]
     ) -> None:
         api.replies = [KeyboardInterrupt()]
         conversation = run(api, [big("a"), big("b")])
-        assert conversation.history == [big("a"), big("b")]
+        assert conversation.history == [big("b")]
         assert "[Interrupted; returning to prompt]" in capsys.readouterr().out
 
     def test_summaries_can_be_turned_off(

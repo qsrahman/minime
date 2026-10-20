@@ -223,12 +223,9 @@ def test_summary_is_trimmed_like_any_turn() -> None:
     assert context.history == [user("now"), user("next")]
 
 
-def test_restore_puts_dropped_turns_back_in_order() -> None:
+def test_trim_returns_the_dropped_turns_in_order() -> None:
     history = [user("one"), output("a", 3000), user("two"), user("three")]
     context = Context(list(history))
     dropped, _, _ = context.trim(500)
     assert dropped == history[:2]
     assert context.history == [user("two"), user("three")]
-
-    context.restore(dropped)
-    assert context.history == history

@@ -69,7 +69,7 @@ def kill_process_tree(process: subprocess.Popen[bytes]) -> None:
 
 class RunCommandArguments(ToolArguments):
     cmd: str = Field(description="The shell command to run.")
-    timeout: int | None = Field(description="Maximum execution time in seconds.")
+    timeout: int | None = Field(ge=1, description="Maximum execution time in seconds.")
     cwd: str | None = Field(description="Optional working directory for the command.")
 
 
@@ -84,8 +84,6 @@ class RunCommandTool(Tool[RunCommandArguments]):
 
     def run(self, args: RunCommandArguments) -> dict[str, Any]:
         timeout = self.default_timeout if args.timeout is None else args.timeout
-        if timeout <= 0:
-            raise ValueError("timeout must be greater than zero")
 
         process = subprocess.Popen(
             args.cmd,
