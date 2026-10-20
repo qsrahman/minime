@@ -197,7 +197,7 @@ def test_old_turns_are_summarised_and_remembered(
     (tmp_path / "three.txt").write_text("The third code is DAHLIA.\n" + filler)
     agent = make_agent()
     # Room for the instructions and tools plus roughly one file read.
-    agent.config.max_history_tokens = _limit_for(agent, 2600)
+    agent.config.max_context_tokens = _limit_for(agent, 2600)
 
     notices: list[str] = []
     for name in ("one", "two", "three"):

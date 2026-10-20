@@ -37,10 +37,10 @@ class Config(BaseSettings):
         gt=0,
         validation_alias="COMMAND_TIMEOUT_SECONDS",
     )
-    max_history_tokens: int = Field(
+    max_context_tokens: int = Field(
         default=200_000,
         gt=0,
-        validation_alias="MAX_HISTORY_TOKENS",
+        validation_alias="MAX_CONTEXT_TOKENS",
     )
     reasoning_effort: ReasoningEffort = Field(
         default=None,

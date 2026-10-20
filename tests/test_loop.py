@@ -501,7 +501,7 @@ class TestTokenBudget:
     def test_old_turns_are_dropped_to_fit(
         self, api: Api, settings: config.Config
     ) -> None:
-        settings.max_history_tokens = tokens_for(settings, 1000)
+        settings.max_context_tokens = tokens_for(settings, 1000)
         history = [{"role": "user", "content": "o" * 2000}]
         api.replies = [answer(""), answer("ok")]  # no summary text, then the answer
         conversation = run(api, history)
@@ -520,7 +520,7 @@ class TestTokenBudget:
         self, api: Api, settings: config.Config, workspace: Path
     ) -> None:
         (workspace / "big.txt").write_text("x" * 6000)
-        settings.max_history_tokens = tokens_for(settings, 16_000)
+        settings.max_context_tokens = tokens_for(settings, 16_000)
         api.replies = [
             *(response_body(read(f"r{i}", "big.txt")) for i in range(3)),
             answer(),
@@ -545,7 +545,7 @@ class TestTokenBudget:
         settings: config.Config,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        settings.max_history_tokens = tokens_for(settings, 500)
+        settings.max_context_tokens = tokens_for(settings, 500)
         api.replies = [answer("never reached")]
         conversation = run(api, prompt="p" * 5000)
         assert api.requests == []
@@ -560,7 +560,7 @@ class TestTokenBudget:
     ) -> None:
         """The same history fits at 4 bytes per token but not at 1 byte per token."""
         (workspace / "big.txt").write_text("x" * 6000)
-        settings.max_history_tokens = overhead(settings) + 3000
+        settings.max_context_tokens = overhead(settings) + 3000
 
         def second_request_output(tokens_per_byte: float) -> str:
             api.requests.clear()
@@ -576,14 +576,14 @@ class TestTokenBudget:
     ) -> None:
         new_message = [{"role": "user", "content": "new"}]
         # Room for the new message and a few bytes more, but not for "old" too.
-        settings.max_history_tokens = tokens_for(settings, json_bytes(new_message) + 5)
+        settings.max_context_tokens = tokens_for(settings, json_bytes(new_message) + 5)
         # "old" is dropped (and an empty summary of it discarded).
         api.replies = [answer(""), answer()]
         run(api, old_history())
         assert kinds(api.requests[1]["input"]) == ["user:new"]
 
         # With 3000 bytes more room the same history fits untouched...
-        settings.max_history_tokens += 3000 // 4
+        settings.max_context_tokens += 3000 // 4
         api.replies = [answer()]
         run(api, old_history())
         assert kinds(api.requests[2]["input"]) == ["user:old", "user:new"]
@@ -598,7 +598,7 @@ class TestTokenBudget:
         self, api: Api, settings: config.Config
     ) -> None:
         # Room for 2000 bytes of history at 1 token per byte, far more at the default.
-        settings.max_history_tokens = overhead(settings) + 2000
+        settings.max_context_tokens = overhead(settings) + 2000
         api.replies = [answer("a" * 10, input_tokens=10_000_000), answer(""), answer()]
         conversation = run(api, prompt="p" * 1900)
         assert conversation.tokens_per_byte == 1.0
@@ -617,7 +617,7 @@ class TestSummaries:
     def limit(self, settings: config.Config) -> None:
         # Room for about 5000 bytes: two big() messages plus a prompt do not fit,
         # so the first is dropped, leaving space for a short summary.
-        settings.max_history_tokens = tokens_for(settings, 5000)
+        settings.max_context_tokens = tokens_for(settings, 5000)
 
     def test_dropped_turns_are_replaced_by_a_summary(
         self, api: Api, streaming: bool, capsys: pytest.CaptureFixture[str]
@@ -740,7 +740,7 @@ class TestSummaries:
         assert kinds(api.requests[0]["input"]) == [f"user:{'b' * 3000}", "user:new"]
         out = capsys.readouterr().out
         assert "Summarising" not in out
-        limit = settings.max_history_tokens
+        limit = settings.max_context_tokens
         assert limit >= 1000  # so the thousands separator shows
         assert f"[Conversation history trimmed to fit {limit:,} tokens]" in out
 

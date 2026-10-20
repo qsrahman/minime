@@ -115,7 +115,7 @@ constructors; there is no global state:
   env vars: `OPENAI_MODEL`→`model`, `MAX_STEPS_PER_TURN`→`max_steps`,
   `COMMAND_TIMEOUT_SECONDS`→`command_timeout`, `STREAMING`→`streaming`,
   `REASONING_EFFORT`→`reasoning_effort`, `SUMMARIZE`→`summarize`,
-  `MAX_HISTORY_TOKENS`→`max_history_tokens`,
+  `MAX_CONTEXT_TOKENS`→`max_context_tokens`,
   `BRAVE_API_KEY`→`brave_api_key`. Unknown env vars are ignored.
 - The agent works in the directory it is started from: the tools use paths
   as given, so relative ones (and `run_command`'s `cwd`) start from the
@@ -158,7 +158,7 @@ constructors; there is no global state:
 - `Context` (in `context.py`) holds `history` and `tokens_per_byte`, and all
   history changes go through it (`add_prompt`, `add_step`,
   `discard_unanswered`, `trim`, `reset`). The token limit is enforced in bytes:
-  `Agent.run_turn` converts `max_history_tokens`
+  `Agent.run_turn` converts `max_context_tokens`
   to a byte budget with that ratio (minus the instructions and tool schemas,
   which are sent every time) and re-learns the ratio from each response's
   `usage.input_tokens`, bounded to 0.1-1.0. `/reset` empties `history` and

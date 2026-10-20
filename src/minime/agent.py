@@ -123,7 +123,7 @@ class Agent:
         try:
             for _ in range(config.max_steps):
                 max_bytes = (
-                    int(config.max_history_tokens / context.tokens_per_byte)
+                    int(config.max_context_tokens / context.tokens_per_byte)
                     - overhead_bytes
                 )
                 dropped, trimmed, request_dropped = context.trim(max_bytes)
@@ -132,7 +132,7 @@ class Agent:
                 elif trimmed:
                     on_notice(
                         "Conversation history trimmed to fit "
-                        f"{config.max_history_tokens:,} tokens"
+                        f"{config.max_context_tokens:,} tokens"
                     )
                 if request_dropped:
                     raise TurnError(
