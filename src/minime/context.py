@@ -42,6 +42,19 @@ class Context:
         """Forget the history; the learned tokens per byte still apply."""
         self.history.clear()
 
+    def byte_budget(self, max_tokens: int, overhead_bytes: int) -> int:
+        """The bytes of history that fit in max_tokens, after overhead_bytes
+        sent with every request (instructions and tool schemas)."""
+        return int(max_tokens / self.tokens_per_byte) - overhead_bytes
+
+    def learn_tokens_per_byte(self, input_tokens: int, request_bytes: int) -> None:
+        """Learn the model's ratio from the tokens it counted for a request.
+
+        Cached tokens are part of input_tokens and still fill the context
+        window, so they count. The bounds guard against nonsense reports.
+        """
+        self.tokens_per_byte = min(1.0, max(0.1, input_tokens / request_bytes))
+
     def add_prompt(self, prompt: str) -> EasyInputMessageParam:
         """Start a turn with the user's message, which is returned."""
         message: EasyInputMessageParam = {"role": "user", "content": prompt}

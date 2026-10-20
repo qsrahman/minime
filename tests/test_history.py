@@ -229,3 +229,22 @@ def test_trim_returns_the_dropped_turns_in_order() -> None:
     dropped, _, _ = context.trim(500)
     assert dropped == history[:2]
     assert context.history == [user("two"), user("three")]
+
+
+def test_byte_budget_converts_tokens_and_leaves_out_the_overhead() -> None:
+    assert Context().byte_budget(1000, 300) == 4000 - 300  # 4 bytes per token
+    assert Context(tokens_per_byte=0.5).byte_budget(1000, 300) == 2000 - 300
+
+
+def test_learned_ratio_replaces_the_default() -> None:
+    context = Context()
+    context.learn_tokens_per_byte(500, 1000)
+    assert context.tokens_per_byte == 0.5
+    assert context.byte_budget(1000, 0) == 2000
+
+
+@pytest.mark.parametrize(("input_tokens", "expected"), [(1, 0.1), (10**7, 1.0)])
+def test_implausible_ratios_are_bounded(input_tokens: int, expected: float) -> None:
+    context = Context()
+    context.learn_tokens_per_byte(input_tokens, 1000)
+    assert context.tokens_per_byte == expected

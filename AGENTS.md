@@ -81,7 +81,10 @@ constructors; there is no global state:
   `Repl.ask` (output printed, problems reported) and `turn()` calls
   `Agent.run_turn` directly (problems raised). There are no stand-in response objects, so
   these tests also catch SDK changes; keep them passing when upgrading `openai`.
-  Use the `streaming` fixture to run a test in both modes.
+  Use the `streaming` fixture to run a test in both modes. `TestRepl` drives
+  `Repl` over a `FakeAgent` (just `run_turn()` and `reset()`) via
+  `repl_session(monkeypatch, *inputs)`; only `test_main_wires_up_the_agent`
+  goes through `main()`.
 - `tests/test_terminal.py` runs the real `main.main()` as a child process on a
   pseudo-terminal and types Ctrl-C / Ctrl-D at it, with a local HTTP server
   streaming scripted replies. It is the only test of real signal delivery; the
@@ -174,12 +177,12 @@ constructors; there is no global state:
   `history`; iterations are capped by `MAX_STEPS_PER_TURN`.
 - `Context` (in `context.py`) holds `history` and `tokens_per_byte`, and all
   history changes go through it (`add_prompt`, `add_step`,
-  `discard_unanswered`, `trim`, `reset`). The token limit is enforced in bytes:
-  `Agent.run_turn` converts `max_context_tokens`
-  to a byte budget with that ratio (minus the instructions and tool schemas,
-  which are sent every time) and re-learns the ratio from each response's
-  `usage.input_tokens`, bounded to 0.1-1.0. `/reset` empties `history` and
-  keeps the ratio.
+  `discard_unanswered`, `trim`, `reset`). It also owns the ratio: the token
+  limit is enforced in bytes, `byte_budget(max_tokens, overhead_bytes)`
+  converts `max_context_tokens` with it (minus the instructions and tool
+  schemas, which are sent every time), and `learn_tokens_per_byte` re-learns
+  it from each response's `usage.input_tokens`, bounded to 0.1-1.0.
+  `/reset` (`Agent.reset()`) empties `history` and keeps the ratio.
 - `store=False` means the API keeps nothing, so reasoning items in
   `response.output` must be replayed with their `encrypted_content`. The API
   returns that automatically when `store=False` (checked 2026-10-13 on

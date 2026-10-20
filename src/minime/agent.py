@@ -106,9 +106,8 @@ class Agent:
 
         try:
             for _ in range(config.max_steps):
-                max_bytes = (
-                    int(config.max_context_tokens / context.tokens_per_byte)
-                    - overhead_bytes
+                max_bytes = context.byte_budget(
+                    config.max_context_tokens, overhead_bytes
                 )
                 dropped, trimmed, request_dropped = context.trim(max_bytes)
                 if dropped and config.summarize:
@@ -191,12 +190,9 @@ class Agent:
             if response.output_text:
                 on_text(response.output_text + "\n")
 
-        # Learn this model's tokens per byte from what it just counted. Cached
-        # tokens are part of input_tokens and still fill the context window, so
-        # the limit counts them; the bounds guard against nonsense reports.
         if response.usage and response.usage.input_tokens:
-            self.context.tokens_per_byte = min(
-                1.0, max(0.1, response.usage.input_tokens / request_bytes)
+            self.context.learn_tokens_per_byte(
+                response.usage.input_tokens, request_bytes
             )
 
         if response.status == "incomplete":

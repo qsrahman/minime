@@ -7,9 +7,11 @@ names, response parsing.
 
 import json
 import sys
+from collections.abc import Callable
 from datetime import date
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import httpx2
 import openai
@@ -26,7 +28,7 @@ from conftest import (
     response_body,
 )
 from minime import config, main, shell
-from minime.agent import SUMMARY_REQUEST, SYSTEM_PROMPT, Agent
+from minime.agent import SUMMARY_REQUEST, SYSTEM_PROMPT, Agent, TurnError
 from minime.context import Context, json_bytes
 from minime.main import Repl, build_toolbox
 
@@ -489,18 +491,15 @@ class TestTokenBudget:
         assert conversation.tokens_per_byte == pytest.approx(2000 / request_bytes)
         assert 0.1 < conversation.tokens_per_byte < 1.0
 
+    def test_reset_keeps_the_learned_ratio(self, api: Api) -> None:
+        agent = api.agent(Context(history=old_history(), tokens_per_byte=0.5))
+        agent.reset()
+        assert agent.context.history == []
+        assert agent.context.tokens_per_byte == 0.5
+
     def test_ratio_is_kept_without_usage(self, api: Api) -> None:
         api.replies = [answer()]
         assert run(api).tokens_per_byte == 0.25
-
-    @pytest.mark.parametrize(
-        ("input_tokens", "expected"), [(1, 0.1), (10_000_000, 1.0)]
-    )
-    def test_implausible_usage_is_bounded(
-        self, api: Api, input_tokens: int, expected: float
-    ) -> None:
-        api.replies = [answer(input_tokens=input_tokens)]
-        assert run(api).tokens_per_byte == expected
 
     def test_old_turns_are_dropped_to_fit(
         self, api: Api, settings: config.Config
@@ -812,174 +811,192 @@ class TestInstructions:
         assert "- Current date: 2026-10-14\n" in api.requests[1]["instructions"]
 
 
-class TestRepl:
-    @pytest.fixture
-    def repl(
-        self, settings: config.Config, monkeypatch: pytest.MonkeyPatch
-    ) -> dict[str, Any]:
-        """Run main() with scripted input, a fake OpenAI client and a recorded run_turn."""
-        state: dict[str, Any] = {
-            "inputs": [],
-            "prompts": [],
-            "agents": [],
-            "client_kwargs": None,
-        }
+class FakeAgent:
+    """All that Repl uses of an agent: run_turn() and reset()."""
 
-        def fake_input(prompt: str) -> str:
-            item = state["inputs"].pop(0)
-            if isinstance(item, BaseException):
-                raise item
-            return item
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+        self.resets = 0
 
-        def fake_openai(**kwargs: Any) -> str:
-            state["client_kwargs"] = kwargs
-            return "client"
-
-        def fake_run_turn(agent: Agent, prompt: str, **callbacks: Any) -> None:
-            state["prompts"].append(prompt)
-            state["agents"].append(agent)
-            agent.context.history.append({"role": "user", "content": prompt})
-            if prompt == "explode":
-                raise RuntimeError("boom")
-            if prompt == "learn":
-                agent.context.tokens_per_byte = 0.5
-
-        monkeypatch.setattr("builtins.input", fake_input)
-        monkeypatch.setattr(main, "Config", lambda **kwargs: settings)
-        monkeypatch.setattr(main, "OpenAI", fake_openai)
-        monkeypatch.setattr(Agent, "run_turn", fake_run_turn)
-        return state
-
-    def test_banner_and_client_settings(
+    def run_turn(
         self,
-        repl: dict[str, Any],
-        settings: config.Config,
-        capsys: pytest.CaptureFixture[str],
+        prompt: str,
+        on_text: Callable[[str], None],
+        on_notice: Callable[[str], None],
     ) -> None:
-        settings.model = "banner-model"
+        self.prompts.append(prompt)
+        if prompt == "explode":
+            raise RuntimeError("boom")
+        if prompt == "give up":
+            raise TurnError("Step limit reached (16)")
+        on_text(f"answer to {prompt}\n")
+
+    def reset(self) -> None:
+        self.resets += 1
+
+
+def repl_session(
+    monkeypatch: pytest.MonkeyPatch, *inputs: str | BaseException
+) -> FakeAgent:
+    """Run a Repl over a FakeAgent, typing these inputs at its prompt."""
+    queue = list(inputs)
+
+    def fake_input(prompt: str) -> str:
+        item = queue.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    agent = FakeAgent()
+    Repl(cast(Agent, agent), "fake-model").run()
+    return agent
+
+
+class TestRepl:
+    def test_main_wires_up_the_agent(
+        self, settings: config.Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        settings.model = "wired-model"
         settings.base_url = "http://localhost:9/v1"
-        repl["inputs"] = ["/exit"]
+        built: dict[str, Any] = {}
+        monkeypatch.setattr(main, "Config", lambda **kwargs: settings)
+        monkeypatch.setattr(
+            main, "OpenAI", lambda **kwargs: built.setdefault("client", kwargs)
+        )
+        monkeypatch.setattr(
+            main,
+            "Repl",
+            lambda agent, model: SimpleNamespace(
+                run=lambda: built.update(agent=agent, model=model)
+            ),
+        )
         main.main()
-        out = capsys.readouterr().out
-        assert out.startswith("AI coding agent | model: banner-model\n")
-        assert "Type /help to list commands." in out
-        assert out.endswith("\nBye.\n")
-        assert repl["client_kwargs"] == {
+        assert built["client"] == {
             "api_key": "test-key",
             "base_url": "http://localhost:9/v1",
         }
+        agent = built["agent"]
+        assert agent.client is built["client"]
+        assert list(agent.toolbox.tools) == list(build_toolbox(settings).tools)
+        assert built["model"] == "wired-model"
+
+    def test_banner_and_farewell(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repl_session(monkeypatch, "/exit")
+        out = capsys.readouterr().out
+        assert out.startswith("AI coding agent | model: fake-model\n")
+        assert "Type /help to list commands." in out
+        assert out.endswith("\nBye.\n")
 
     @pytest.mark.parametrize("word", ["/exit", "/quit", "/EXIT", "  /Quit  "])
-    def test_exit_words(self, repl: dict[str, Any], word: str) -> None:
-        repl["inputs"] = [word, "never read"]
-        main.main()
-        assert repl["prompts"] == []
-        assert repl["inputs"] == ["never read"]
+    def test_exit_words(self, monkeypatch: pytest.MonkeyPatch, word: str) -> None:
+        # Had the loop gone on, "never read" would have been sent as a prompt.
+        assert repl_session(monkeypatch, word, "never read").prompts == []
 
     @pytest.mark.parametrize("signal", [EOFError(), KeyboardInterrupt()])
     def test_end_of_input_or_ctrl_c_at_the_prompt_quits(
         self,
-        repl: dict[str, Any],
-        signal: BaseException,
+        monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
+        signal: BaseException,
     ) -> None:
-        repl["inputs"] = [signal]
-        main.main()
+        repl_session(monkeypatch, signal)
         assert capsys.readouterr().out.count("Bye.") == 1
 
-    def test_prompts_go_to_one_agent(self, repl: dict[str, Any]) -> None:
-        repl["inputs"] = ["first", "second", "/exit"]
-        main.main()
-        assert repl["prompts"] == ["first", "second"]
-        first, second = repl["agents"]
-        assert first is second
-        assert kinds(first.context.history) == ["user:first", "user:second"]
-        assert first.client == "client"
-        assert list(first.toolbox.tools) == list(build_toolbox(first.config).tools)
+    def test_prompts_go_to_the_agent_and_answers_are_printed(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        agent = repl_session(monkeypatch, "first", "second", "/exit")
+        assert agent.prompts == ["first", "second"]
+        out = capsys.readouterr().out
+        assert "\nanswer to first\n\n" in out
+        assert "\nanswer to second\n\n" in out
 
     @pytest.mark.parametrize("blank", ["", "   ", "\t", " \t "])
-    def test_blank_prompts_are_not_sent(self, repl: dict[str, Any], blank: str) -> None:
-        repl["inputs"] = [blank, "real", "/exit"]
-        main.main()
-        assert repl["prompts"] == ["real"]
-
-    def test_errors_are_reported_and_the_loop_continues(
-        self, repl: dict[str, Any], capsys: pytest.CaptureFixture[str]
+    def test_blank_prompts_are_not_sent(
+        self, monkeypatch: pytest.MonkeyPatch, blank: str
     ) -> None:
-        repl["inputs"] = ["explode", "after", "/exit"]
-        main.main()
-        assert repl["prompts"] == ["explode", "after"]
-        assert "[Agent error: RuntimeError: boom]" in capsys.readouterr().out
+        assert repl_session(monkeypatch, blank, "real", "/exit").prompts == ["real"]
+
+    @pytest.mark.parametrize(
+        ("prompt", "notice"),
+        [
+            ("explode", "[Agent error: RuntimeError: boom]"),
+            ("give up", "[Step limit reached (16)]"),
+        ],
+    )
+    def test_errors_are_reported_and_the_loop_continues(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        prompt: str,
+        notice: str,
+    ) -> None:
+        agent = repl_session(monkeypatch, prompt, "after", "/exit")
+        assert agent.prompts == [prompt, "after"]
+        assert notice in capsys.readouterr().out
 
     @pytest.mark.parametrize("command", ["/reset", "/RESET", "  /reset  "])
-    def test_reset_empties_the_history_and_keeps_going(
+    def test_reset(
         self,
-        repl: dict[str, Any],
+        monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
         command: str,
     ) -> None:
-        repl["inputs"] = ["one", "two", command, "three", "/exit"]
-        main.main()
-        # /reset itself is not sent to the model.
-        assert repl["prompts"] == ["one", "two", "three"]
-        assert kinds(repl["agents"][0].context.history) == ["user:three"]
+        agent = repl_session(monkeypatch, "one", command, "two", "/exit")
+        assert agent.resets == 1
+        assert agent.prompts == ["one", "two"]  # /reset is not sent to the model
         assert "[History reset]" in capsys.readouterr().out
 
-    def test_reset_keeps_the_learned_token_ratio(self, repl: dict[str, Any]) -> None:
-        repl["inputs"] = ["learn", "/reset", "/exit"]
-        main.main()
-        assert repl["agents"][0].context.tokens_per_byte == 0.5
-
     def test_help_lists_every_command(
-        self, repl: dict[str, Any], capsys: pytest.CaptureFixture[str]
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        repl["inputs"] = ["/help", "/exit"]
-        main.main()
+        agent = repl_session(monkeypatch, "/help", "/exit")
         out = capsys.readouterr().out
         for command in ("/clear", "/exit", "/help", "/quit", "/reset"):
             assert f"  {command} " in out
-        assert repl["prompts"] == []
+        assert agent.prompts == []
 
     @pytest.mark.parametrize("tty", [True, False])
     def test_clear_wipes_the_screen_and_keeps_the_history(
         self,
-        repl: dict[str, Any],
-        capsys: pytest.CaptureFixture[str],
         monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
         tty: bool,
     ) -> None:
         monkeypatch.setattr(sys.stdout, "isatty", lambda: tty)
-        repl["inputs"] = ["one", "/clear", "two", "/exit"]
-        main.main()
-        assert repl["prompts"] == ["one", "two"]
-        assert kinds(repl["agents"][0].context.history) == ["user:one", "user:two"]
+        agent = repl_session(monkeypatch, "one", "/clear", "two", "/exit")
+        assert agent.prompts == ["one", "two"]
+        assert agent.resets == 0
         # Escape codes only reach a terminal, never redirected output.
         assert ("\033[2J" in capsys.readouterr().out) is tty
 
     @pytest.mark.parametrize("word", ["/rest", "/tmp/notes.txt"])
     def test_unknown_command_is_reported_and_not_sent(
-        self, repl: dict[str, Any], capsys: pytest.CaptureFixture[str], word: str
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        word: str,
     ) -> None:
-        repl["inputs"] = [word, "/exit"]
-        main.main()
-        assert repl["prompts"] == []
+        assert repl_session(monkeypatch, word, "/exit").prompts == []
         assert f"[Unknown command: {word}. Type /help" in capsys.readouterr().out
 
     def test_slash_prompt_with_spaces_goes_to_the_model(
-        self, repl: dict[str, Any]
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        repl["inputs"] = ["/usr/bin is missing", "/exit"]
-        main.main()
-        assert repl["prompts"] == ["/usr/bin is missing"]
+        agent = repl_session(monkeypatch, "/usr/bin is missing", "/exit")
+        assert agent.prompts == ["/usr/bin is missing"]
 
 
 class TestNotices:
     """How Repl lays out the model's text and its own bracketed notices."""
 
     def test_notice_after_text_starts_a_new_line(
-        self, settings: config.Config, capsys: pytest.CaptureFixture[str]
+        self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        repl = Repl(Api(settings).agent(), "test-model")
+        repl = Repl(cast(Agent, FakeAgent()), "fake-model")
         repl.write("partial answer")
         repl.notice("Interrupted; returning to prompt")
         assert (
@@ -988,9 +1005,9 @@ class TestNotices:
         )
 
     def test_notice_at_a_line_start_adds_no_blank_line(
-        self, settings: config.Config, capsys: pytest.CaptureFixture[str]
+        self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        repl = Repl(Api(settings).agent(), "test-model")
+        repl = Repl(cast(Agent, FakeAgent()), "fake-model")
         repl.write("full line\n")
         repl.notice("one")
         repl.notice("two")
