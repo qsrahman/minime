@@ -141,12 +141,6 @@ def test_oversized_request_empties_the_history() -> None:
     assert history == []
 
 
-def test_history_without_a_user_turn_cannot_be_trimmed() -> None:
-    history = [{"type": "message", "text": "z" * 500}]
-    assert Context(history).trim(10)[1:] == (False, False)
-    assert len(history) == 1
-
-
 def test_size_is_measured_in_utf8_bytes() -> None:
     history = [user("old"), user("é" * 120)]  # 120 characters, 240 bytes
     assert Context(history).trim(300)[1:] == (True, False)

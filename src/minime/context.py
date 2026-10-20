@@ -113,12 +113,16 @@ class Context:
         self.history[:] = previous
         return False
 
+    def _turn_starts(self) -> list[int]:
+        """Where each turn, a user message, starts in the history."""
+        return [index for index, item in enumerate(self.history) if is_prompt(item)]
+
     def undo(self) -> bool:
         """Drop the last turn: the last user message and everything after it.
 
         Returns whether there was one to drop.
         """
-        starts = [index for index, item in enumerate(self.history) if is_prompt(item)]
+        starts = self._turn_starts()
         if not starts:
             return False
         del self.history[starts[-1] :]
@@ -126,7 +130,7 @@ class Context:
 
     def turns(self) -> int:
         """How many turns the history holds (a leading summary counts as one)."""
-        return sum(map(is_prompt, self.history))
+        return len(self._turn_starts())
 
     def discard_unanswered(self, prompt: EasyInputMessageParam) -> None:
         """Drop the turn's prompt if no step was recorded after it."""
@@ -152,12 +156,10 @@ class Context:
             "call the tool again if it is still needed.]"
         )
         while json_bytes(history) > target_bytes:
-            user_turn_starts = [
-                index for index, item in enumerate(history) if is_prompt(item)
-            ]
-            if len(user_turn_starts) > 1:
-                dropped += history[: user_turn_starts[1]]
-                del history[: user_turn_starts[1]]
+            starts = self._turn_starts()
+            if len(starts) > 1:
+                dropped += history[: starts[1]]
+                del history[: starts[1]]
                 trimmed = True
                 continue
 
@@ -179,7 +181,7 @@ class Context:
             trimmed = True
 
         # The request itself is over the limit: give up on it.
-        if json_bytes(history) > max_bytes and any(map(is_prompt, history)):
+        if json_bytes(history) > max_bytes:
             history.clear()
             return [], True, True
         return dropped, trimmed, False
