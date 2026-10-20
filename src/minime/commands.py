@@ -32,9 +32,6 @@ class Command(ABC):
     def run(self, repl: Repl, arg: str) -> None:
         """Carry out the command; arg is the rest of the line, stripped."""
 
-    def description(self) -> str:
-        return inspect.getdoc(self) or ""
-
 
 class HelpCommand(Command):
     """list commands"""
@@ -42,13 +39,13 @@ class HelpCommand(Command):
     names = ("/help",)
 
     def run(self, repl: Repl, arg: str) -> None:
-        usages = {
-            name: f"{name} {command.argument}".strip()
+        rows = [
+            (f"{name} {command.argument}".strip(), inspect.getdoc(command))
             for name, command in repl.commands.items()
-        }
-        width = max(map(len, usages.values()))
-        for name, command in repl.commands.items():
-            print(f"  {usages[name]:<{width}}  {command.description()}")
+        ]
+        width = max(len(usage) for usage, _ in rows)
+        for usage, text in rows:
+            print(f"  {usage:<{width}}  {text}")
         print()
 
 
