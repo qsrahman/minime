@@ -1,7 +1,7 @@
 [project]
 name = "minime"
 version = "0.1.0"
-description = "A tiny AI coding agent."
+description = "MiniMe: a small interactive AI coding agent."
 readme = "README.md"
 authors = [
     { name = "Qazi Sami ur Rahman", email = "qsrahmans@gmail.com" }

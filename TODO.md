@@ -33,6 +33,46 @@ together: one shows what the agent does, the other lets you stop it first.
    directories too, and cap its size so a large file cannot crowd out the
    history.
 
+## Command line
+
+Problems first, since each silently does the wrong thing today:
+
+1. **A pasted multi-line block becomes several prompts.** `input()` reads
+   one line at a time, so pasting a log or a snippet sends each line as its
+   own turn. prompt_toolkit's multi-line input with bracketed paste (item 3)
+   fixes it; without it, a continuation convention (a trailing `\` or a
+   `"""` block) would do.
+2. **Ctrl-C at the prompt ends the session and loses the conversation,** and
+   because of the lost-interrupt limitation a second press often lands there.
+   Make Ctrl-C at the prompt clear the line, as `python` and `bash` do, and
+   leave quitting to Ctrl-D, `/exit` and `/quit`. Also catch
+   `KeyboardInterrupt` around the whole loop body: one that arrives while
+   `Repl.ask` prints its "Interrupted" notice now ends the program with a
+   traceback. A few lines.
+3. **Installed copies cannot be configured from a file.** `.env` is read only
+   from the source tree, so after `uv tool install .` only environment
+   variables and flags remain. Add a user config file such as
+   `~/.config/minime/config.toml` (pydantic-settings'
+   `TomlConfigSettingsSource`), below `.env` in precedence, and say where it
+   goes.
+
+Additions:
+
+4. **One-shot mode:** `minime "explain this error"` or
+   `git diff | minime "review this"` runs one turn, prints the answer and
+   exits with status 0, or 1 on a `TurnError` or API error. When input is
+   piped, show no banner or prompts and send notices to stderr, so stdout
+   carries only the answer. A positional argument via pydantic-settings'
+   `CliPositionalArg` plus `isatty()` checks; about 40 lines and tests.
+5. **`--version`** from the package metadata (`importlib.metadata`).
+6. **`!command` shell escape:** run `!git status` without asking the model;
+   show the output and optionally add it to the conversation.
+7. **`--continue`** to reopen the last session, on top of `/save` and
+   `/load` (item 7 above).
+
+Suggested order: 2, then 1 through item 3 (prompt_toolkit), then 4 and 3;
+5 and 6 are cheap extras.
+
 ## New tools
 
 Each is a `ToolArguments` model, a `Tool` subclass and a line in
