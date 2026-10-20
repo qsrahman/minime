@@ -25,6 +25,13 @@ together: one shows what the agent does, the other lets you stop it first.
    (see the known limitation in `AGENTS.md`).
 7. **`/save <file>` and `/load <file>`.** History mixes plain dicts and SDK
    objects, so saving needs `model_dump()`.
+8. **Load project instructions.** Read `AGENTS.md` (or `CLAUDE.md`) from the
+   working directory and append it to the instructions, after the static
+   prompt and before or with the Environment section, so the cached prefix
+   stays the same. Every major coding agent does this to pick up a project's
+   build commands and conventions. Decide whether to look in parent
+   directories too, and cap its size so a large file cannot crowd out the
+   history.
 
 ## Later: a full-screen interface
 

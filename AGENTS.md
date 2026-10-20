@@ -213,11 +213,13 @@ constructors; there is no global state:
   - Any change near the start of the prompt (a trim, an edited earlier item)
     is a full miss, which is why trimming cuts to 75% instead of to the limit
     (cache hits over a 14-turn run at the limit went from 24% to 53%).
-  - `SYSTEM_PROMPT` plus the tool schemas come to about 830 tokens, under the
-    minimum, so they are not cached on their own; caching starts once the
-    conversation takes the request past 1,024 tokens. Keep that part static
-    and keep per-session values in the Environment section, which
-    `Agent._instructions()` appends last.
+  - `SYSTEM_PROMPT` (about 520 tokens) plus the tool schemas and the
+    Environment section come to about 1,200 tokens, over the minimum, so even
+    a new session's first request is mostly cached (measured 2026-10-20: 1,152
+    of 1,212 tokens on the second session's first turn). Keep that part
+    static and keep per-session values in the Environment section, which
+    `Agent._instructions()` appends last; shortening the prompt below the
+    minimum loses this.
 - A streamed response that does not complete ends with a `response.incomplete`
   or `response.failed` event and the SDK's `get_final_response()` then raises,
   so `Agent._create_response` takes the response from that event; both
