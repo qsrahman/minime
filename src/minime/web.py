@@ -1,7 +1,7 @@
 import re
 import time
 from html.parser import HTMLParser
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urljoin
 
 import httpx2
@@ -109,8 +109,18 @@ def html_to_text(markup: str, base_url: str = "") -> tuple[str, str]:
     return extractor.title.strip(), re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
-def fetch_page(url: str) -> tuple[str, str, str, bool]:
-    """Download a page and return its final URL, title, and text."""
+class Page(NamedTuple):
+    """A downloaded page as readable text."""
+
+    requested_url: str
+    url: str  # after redirects
+    title: str
+    text: str
+    truncated: bool  # the download stopped at MAX_FETCH_BYTES
+
+
+def fetch_page(url: str) -> Page:
+    """Download a page and return it as text."""
     with httpx2.stream(
         "GET",
         url,
@@ -144,7 +154,7 @@ def fetch_page(url: str) -> tuple[str, str, str, bool]:
         title = ""
         if "html" in content_type:
             title, text = html_to_text(text, str(response.url))
-        return str(response.url), title, text, truncated
+        return Page(url, str(response.url), title, text, truncated)
 
 
 class WebFetchArguments(ToolArguments):
@@ -169,16 +179,17 @@ class WebFetchTool(Tool[WebFetchArguments]):
 
     def __init__(self) -> None:
         # The last page downloaded, so continuation calls page through the
-        # same copy: (requested URL, fetch_page result).
-        self.last_page: tuple[str, tuple[str, str, str, bool]] | None = None
+        # same copy.
+        self.last_page: Page | None = None
 
     def run(self, args: WebFetchArguments) -> dict[str, Any]:
         offset = args.offset or 0
         # Only continuation calls reuse the last download; a first part is always
         # fetched fresh, so a page that changed is never served stale.
-        if not offset or self.last_page is None or self.last_page[0] != args.url:
-            self.last_page = (args.url, fetch_page(args.url))
-        final_url, title, text, truncated = self.last_page[1]
+        page = self.last_page
+        if not offset or page is None or page.requested_url != args.url:
+            page = self.last_page = fetch_page(args.url)
+        text = page.text
         # At most that many characters can fit; multi-byte text is then cut on
         # bytes, with errors="ignore" dropping a character split at the limit.
         content = (
@@ -189,12 +200,12 @@ class WebFetchTool(Tool[WebFetchArguments]):
         end = offset + len(content)
         return {
             "ok": True,
-            "url": final_url,
-            "title": title,
+            "url": page.url,
+            "title": page.title,
             "content": content,
             "total_chars": len(text),
             "next_offset": end if end < len(text) else None,
-            "truncated": truncated,
+            "truncated": page.truncated,
         }
 
 

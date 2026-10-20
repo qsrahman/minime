@@ -1,7 +1,8 @@
 import inspect
 from abc import ABC, abstractmethod
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
+import openai
 from openai.types.responses import ResponseFunctionToolCall
 from openai.types.responses.tool_param import ToolParam
 from pydantic import BaseModel, ConfigDict
@@ -32,13 +33,13 @@ class Tool[ArgumentsT: ToolArguments](ABC):
         """
 
     def schema(self) -> ToolParam:
-        return {
-            "type": "function",
-            "name": self.name,
-            "description": inspect.getdoc(self),
-            "parameters": self.arguments_model.model_json_schema(),
-            "strict": True,
-        }
+        tool = openai.pydantic_responses_function_tool(
+            self.arguments_model, name=self.name, description=inspect.getdoc(self)
+        )
+        # A plain dict: with the model attached, the SDK would parse the
+        # arguments itself and abort the turn on invalid ones, instead of
+        # Toolbox.execute reporting them to the model.
+        return cast(ToolParam, dict(tool))
 
 
 class Toolbox:

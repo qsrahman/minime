@@ -71,6 +71,8 @@ def settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> config.Config:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     monkeypatch.chdir(workspace)
+    # main() reads command-line flags; pytest's own arguments are not for it.
+    monkeypatch.setattr("sys.argv", ["minime"])
     test_settings = config.Config(
         _env_file=None,  # pyright: ignore[reportCallIssue]
         OPENAI_API_KEY="test-key",
@@ -249,16 +251,15 @@ def response_body(
     reason: str | None = None,
     input_tokens: int | None = None,
     cached_tokens: int = 0,
-    output_tokens: int = 7,
     error: str | None = None,
 ) -> dict[str, Any]:
     """A Responses API reply. Usage is left out unless input_tokens is given."""
     usage = input_tokens and {
         "input_tokens": input_tokens,
         "input_tokens_details": {"cached_tokens": cached_tokens},
-        "output_tokens": output_tokens,
+        "output_tokens": 7,
         "output_tokens_details": {"reasoning_tokens": 0},
-        "total_tokens": input_tokens + output_tokens,
+        "total_tokens": input_tokens + 7,
     }
     return {
         "id": "resp_1",
@@ -445,12 +446,17 @@ CTRL_D = b"\x04"
 PROMPT_AGAIN = r"\[Interrupted; returning to prompt\][\s\S]*> $"
 
 
-def process_is_gone(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    return False
+def process_is_gone(pid: int, wait_seconds: float = 0) -> bool:
+    """Whether the process has exited, waiting up to wait_seconds for it."""
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
 
 
 class Terminal:

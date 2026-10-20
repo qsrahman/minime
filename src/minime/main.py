@@ -115,7 +115,7 @@ def main() -> None:
     """Load the configuration, exiting with a readable error if it is invalid,
     and run the terminal loop."""
     try:
-        config = Config()  # pyright: ignore[reportCallIssue]
+        config = Config(_cli_parse_args=True)  # pyright: ignore[reportCallIssue]
     except ValidationError as exc:
         print("Configuration error:", file=sys.stderr)
         for error in exc.errors():

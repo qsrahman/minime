@@ -6,24 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from conftest import Tools
+from conftest import Tools, process_is_gone
 from minime import config, shell, tools
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="uses POSIX shell commands")
 
 LIMIT = tools.MAX_TOOL_OUTPUT_BYTES
 OMITTED = re.compile(r"\n\[\.\.\. (\d+) bytes omitted \.\.\.\]\n")
-
-
-def process_is_gone(pid: int, wait_seconds: float = 3.0) -> bool:
-    deadline = time.monotonic() + wait_seconds
-    while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return True
-        time.sleep(0.05)
-    return False
 
 
 def capture(data: bytes) -> tuple[bytes, bytes, int]:
@@ -253,7 +242,7 @@ class TestRunCommand:
     def test_timeout_kills_child_processes(self, tool: Tools, workspace: Path) -> None:
         result = tool.run_command("sleep 30 & echo $! > child.pid; wait", timeout=1)
         assert result["timed_out"] is True
-        assert process_is_gone(int((workspace / "child.pid").read_text()))
+        assert process_is_gone(int((workspace / "child.pid").read_text()), 3)
 
     def test_interrupt_kills_the_command_and_propagates(
         self, tool: Tools, workspace: Path, monkeypatch: pytest.MonkeyPatch
@@ -265,4 +254,4 @@ class TestRunCommand:
         monkeypatch.setattr(shell, "wait", interrupted)
         with pytest.raises(KeyboardInterrupt):
             tool.run_command("sleep 30 & echo $! > child.pid", timeout=10)
-        assert process_is_gone(int((workspace / "child.pid").read_text()))
+        assert process_is_gone(int((workspace / "child.pid").read_text()), 3)

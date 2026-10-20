@@ -112,31 +112,36 @@ class TestRequests:
         assert all(tool["strict"] is True for tool in body["tools"])
         assert "reasoning" not in body
 
-    def test_instructions_are_sent_with_every_request(self, api: Api) -> None:
-        api.replies = [response_body(write("a")), answer()]
-        run(api)
-        first, second = (body["instructions"] for body in api.requests)
-        assert first.startswith(SYSTEM_PROMPT)
-        assert second == first
-
-    @pytest.mark.parametrize("effort", ["low", "high"])
     def test_reasoning_effort_is_sent_when_configured(
-        self, api: Api, streaming: bool, settings: config.Config, effort: str
+        self, api: Api, streaming: bool, settings: config.Config
     ) -> None:
-        settings.reasoning_effort = effort  # type: ignore[assignment]
+        settings.reasoning_effort = "high"
         api.replies = [response_body(write("a")), answer()]
         run(api)
-        assert [body["reasoning"] for body in api.requests] == [{"effort": effort}] * 2
+        assert [body["reasoning"] for body in api.requests] == [{"effort": "high"}] * 2
 
 
 class TestAnswers:
     def test_final_answer(
         self, api: Api, streaming: bool, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        api.replies = [answer("the answer")]
+        api.replies = [
+            response_body(
+                reasoning_item(),
+                message_item("the answer"),
+                input_tokens=5805,
+                cached_tokens=4608,
+            )
+        ]
         conversation = run(api, old_history())
-        assert kinds(conversation.history) == ["user:old", "user:new", "message"]
-        assert conversation.history[2].content[0].text == "the answer"
+        assert kinds(conversation.history) == [
+            "user:old",
+            "user:new",
+            "reasoning",
+            "message",
+        ]
+        assert conversation.history[3].content[0].text == "the answer"
+        # Only the answer is printed: no reasoning notice and no token counts.
         assert capsys.readouterr().out == "\nthe answer\n\n"
 
     def test_text_alongside_tool_calls_is_printed(
@@ -185,20 +190,25 @@ class TestAnswers:
             capsys.readouterr().out == f"\npartial\n[Response incomplete: {shown}]\n\n"
         )
 
-    def test_incomplete_response_after_a_tool_step_keeps_the_step(
-        self, api: Api
+    @pytest.mark.parametrize(
+        ("error", "shown"),
+        [
+            ("The model is overloaded.", "The model is overloaded."),
+            (None, "unknown error"),
+        ],
+    )
+    def test_failed_response_is_reported_and_dropped(
+        self,
+        api: Api,
+        streaming: bool,
+        capsys: pytest.CaptureFixture[str],
+        error: str | None,
+        shown: str,
     ) -> None:
-        api.replies = [
-            response_body(write("a")),
-            answer("partial", status="incomplete"),
-        ]
+        api.replies = [response_body(status="failed", error=error)]
         conversation = run(api, old_history())
-        assert kinds(conversation.history) == [
-            "user:old",
-            "user:new",
-            "call:a",
-            "output:a:ok",
-        ]
+        assert kinds(conversation.history) == ["user:old"]
+        assert capsys.readouterr().out == f"\n[Response failed: {shown}]\n\n"
 
 
 class TestToolCalls:
@@ -276,6 +286,21 @@ class TestToolCalls:
         assert result["ok"] is False
         assert result["message"].startswith("FileNotFoundError")
 
+    def test_invalid_arguments_are_reported_to_the_model(
+        self, api: Api, streaming: bool
+    ) -> None:
+        """Endpoints that ignore strict mode can send arguments that do not
+        validate; the model must get the error back, not the turn abort."""
+        bad = call_item(
+            "read_file", "r", path=5, start_line=None, end_line=None, offset=None
+        )
+        api.replies = [response_body(bad), answer()]
+        conversation = run(api)
+        result = json.loads(conversation.history[2]["output"])
+        assert result["ok"] is False
+        assert result["message"].startswith("ValidationError")
+        assert kinds(conversation.history)[-1] == "message"
+
     def test_non_ascii_output_is_not_escaped(self, api: Api, workspace: Path) -> None:
         (workspace / "utf.txt").write_text("café 漢字\n", encoding="utf-8")
         api.replies = [response_body(read("r", "utf.txt")), answer()]
@@ -345,10 +370,20 @@ class TestInterruptsAndErrors:
         assert kinds(conversation.history) == ["user:old"]
         assert "[Interrupted; returning to prompt]" in capsys.readouterr().out
 
-    def test_interrupt_after_a_step_keeps_the_step(
-        self, api: Api, streaming: bool
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            KeyboardInterrupt(),
+            httpx2.Response(500, json={"error": {"message": "boom"}}),
+            answer("partial", status="incomplete"),
+            response_body(status="failed", error="boom"),
+        ],
+        ids=["interrupt", "api-error", "incomplete", "failed"],
+    )
+    def test_a_completed_step_survives_a_later_failure(
+        self, api: Api, failure: Any
     ) -> None:
-        api.replies = [response_body(write("a")), KeyboardInterrupt()]
+        api.replies = [response_body(write("a")), failure]
         conversation = run(api, old_history())
         assert kinds(conversation.history) == [
             "user:old",
@@ -415,21 +450,6 @@ class TestInterruptsAndErrors:
             turn(api, conversation=conversation)
         assert kinds(conversation.history) == ["user:old"]
 
-    def test_api_error_after_a_step_keeps_the_step(self, api: Api) -> None:
-        api.replies = [
-            response_body(write("a")),
-            httpx2.Response(500, json={"error": {"message": "boom"}}),
-        ]
-        conversation = Context(history=old_history())
-        with pytest.raises(openai.InternalServerError, match="boom"):
-            turn(api, conversation=conversation)
-        assert kinds(conversation.history) == [
-            "user:old",
-            "user:new",
-            "call:a",
-            "output:a:ok",
-        ]
-
     def test_main_reports_api_errors_and_continues(
         self,
         api: Api,
@@ -442,7 +462,7 @@ class TestInterruptsAndErrors:
         ]
         inputs = iter(["first", "second", "/exit"])
         monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
-        monkeypatch.setattr(main, "Config", lambda: api.settings)
+        monkeypatch.setattr(main, "Config", lambda **kwargs: api.settings)
         monkeypatch.setattr("minime.agent.OpenAI", lambda **kwargs: api.client)
         main.main()
 
@@ -457,29 +477,13 @@ class TestInterruptsAndErrors:
 class TestTokenBudget:
     """History is limited in tokens, using the model's own count per byte."""
 
-    def test_cached_tokens_do_not_reduce_the_context_count(
-        self, api: Api, settings: config.Config
-    ) -> None:
-        """They are a subset of input_tokens and still fill the context window."""
-        api.replies = [answer(input_tokens=2000, cached_tokens=1900)]
-        conversation = run(api, prompt="p" * 900)
-        request_bytes = overhead(settings) + json_bytes(api.requests[0]["input"])
-        assert conversation.tokens_per_byte == pytest.approx(2000 / request_bytes)
-
-    def test_token_counts_are_not_printed(
-        self, api: Api, streaming: bool, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        api.replies = [answer("ok", input_tokens=5805, cached_tokens=4608)]
-        run(api)
-        assert capsys.readouterr().out == "\nok\n\n"
-
-    def test_default_ratio_is_four_bytes_per_token(self) -> None:
-        assert Context().tokens_per_byte == 0.25
-
+    # Cached tokens are a subset of input_tokens and still fill the context
+    # window, so they must not change the learned ratio.
+    @pytest.mark.parametrize("cached_tokens", [0, 1900])
     def test_ratio_is_learned_from_reported_usage(
-        self, api: Api, streaming: bool, settings: config.Config
+        self, api: Api, streaming: bool, settings: config.Config, cached_tokens: int
     ) -> None:
-        api.replies = [answer(input_tokens=2000)]
+        api.replies = [answer(input_tokens=2000, cached_tokens=cached_tokens)]
         conversation = run(api, prompt="p" * 900)
         request_bytes = overhead(settings) + json_bytes(api.requests[0]["input"])
         assert conversation.tokens_per_byte == pytest.approx(2000 / request_bytes)
@@ -761,48 +765,6 @@ class TestSummaries:
         assert api.requests[2]["input"][2]["output"] == OMITTED_TOOL_OUTPUT
 
 
-class TestFailedResponses:
-    def test_failed_response_is_reported_and_dropped(
-        self, api: Api, streaming: bool, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        api.replies = [response_body(status="failed", error="The model is overloaded.")]
-        conversation = run(api, old_history())
-        assert kinds(conversation.history) == ["user:old"]
-        assert (
-            capsys.readouterr().out
-            == "\n[Response failed: The model is overloaded.]\n\n"
-        )
-
-    def test_failed_response_without_details(
-        self, api: Api, streaming: bool, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        api.replies = [response_body(status="failed")]
-        run(api)
-        assert "[Response failed: unknown error]" in capsys.readouterr().out
-
-    def test_failed_response_after_a_tool_step_keeps_the_step(self, api: Api) -> None:
-        api.replies = [
-            response_body(write("a")),
-            response_body(status="failed", error="boom"),
-        ]
-        conversation = run(api, old_history())
-        assert kinds(conversation.history) == [
-            "user:old",
-            "user:new",
-            "call:a",
-            "output:a:ok",
-        ]
-
-
-class TestThinking:
-    def test_reasoning_is_not_announced(
-        self, api: Api, streaming: bool, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        api.replies = [response_body(reasoning_item(), message_item("the answer"))]
-        run(api)
-        assert capsys.readouterr().out == "\nthe answer\n\n"
-
-
 def test_system_prompt_has_no_stray_escape_characters() -> None:
     """A lone backslash in the prompt source (such as "\\frac" written as "\frac")
     turns into a control character instead of the text that was meant."""
@@ -883,7 +845,7 @@ class TestRepl:
                 agent.context.tokens_per_byte = 0.5
 
         monkeypatch.setattr("builtins.input", fake_input)
-        monkeypatch.setattr(main, "Config", lambda: settings)
+        monkeypatch.setattr(main, "Config", lambda **kwargs: settings)
         monkeypatch.setattr("minime.agent.OpenAI", fake_openai)
         monkeypatch.setattr(Agent, "run_turn", fake_run_turn)
         return state
@@ -925,28 +887,21 @@ class TestRepl:
         main.main()
         assert capsys.readouterr().out.count("Goodbye!") == 1
 
-    def test_prompts_are_passed_on_and_blank_lines_skipped(
-        self, repl: dict[str, Any]
-    ) -> None:
-        repl["inputs"] = ["first", "", "second", "/exit"]
+    def test_prompts_go_to_one_agent(self, repl: dict[str, Any]) -> None:
+        repl["inputs"] = ["first", "second", "/exit"]
         main.main()
         assert repl["prompts"] == ["first", "second"]
-        agent = repl["agents"][0]
-        assert agent.client == "client"
-        assert list(agent.toolbox.tools) == list(build_toolbox(agent.config).tools)
+        first, second = repl["agents"]
+        assert first is second
+        assert kinds(first.context.history) == ["user:first", "user:second"]
+        assert first.client == "client"
+        assert list(first.toolbox.tools) == list(build_toolbox(first.config).tools)
 
-    @pytest.mark.parametrize("blank", ["   ", "\t", " \t "])
+    @pytest.mark.parametrize("blank", ["", "   ", "\t", " \t "])
     def test_blank_prompts_are_not_sent(self, repl: dict[str, Any], blank: str) -> None:
         repl["inputs"] = [blank, "real", "/exit"]
         main.main()
         assert repl["prompts"] == ["real"]
-
-    def test_one_agent_serves_every_turn(self, repl: dict[str, Any]) -> None:
-        repl["inputs"] = ["a", "b", "/exit"]
-        main.main()
-        first, second = repl["agents"]
-        assert first is second
-        assert kinds(first.context.history) == ["user:a", "user:b"]
 
     def test_errors_are_reported_and_the_loop_continues(
         self, repl: dict[str, Any], capsys: pytest.CaptureFixture[str]

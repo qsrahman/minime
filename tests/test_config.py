@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -140,3 +141,40 @@ def test_main_reports_configuration_errors_and_exits(
     assert "Configuration error:" in captured.err
     assert "OPENAI_API_KEY" in captured.err
     assert "MAX_STEPS_PER_TURN" in captured.err
+
+
+def test_command_line_flags_override_the_environment(
+    env_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env_file.write_text("OPENAI_API_KEY=k\nOPENAI_MODEL=file-model\n")
+    monkeypatch.setenv("MAX_STEPS_PER_TURN", "9")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["minime", "--openai-model", "flag-model", "--max-steps-per-turn", "3"]
+        + ["--no-streaming", "--reasoning-effort", "low"],
+    )
+    started: list[Config] = []
+    monkeypatch.setattr(main, "Agent", lambda config: config)
+    monkeypatch.setattr(
+        main, "Repl", lambda config: SimpleNamespace(run=lambda: started.append(config))
+    )
+    main.main()
+    [config] = started
+    assert config.api_key == "k"  # from .env, not overridden
+    assert config.model == "flag-model"
+    assert config.max_steps == 3
+    assert config.streaming is False
+    assert config.reasoning_effort == "low"
+
+
+def test_invalid_flag_values_are_reported(
+    env_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    env_file.write_text("OPENAI_API_KEY=k\n")
+    monkeypatch.setattr("sys.argv", ["minime", "--max-steps-per-turn", "0"])
+    with pytest.raises(SystemExit) as exit_info:
+        main.main()
+    assert exit_info.value.code == 1
+    err = capsys.readouterr().err
+    assert "Configuration error:" in err
+    assert "greater than 0" in err

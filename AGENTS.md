@@ -64,7 +64,9 @@ constructors; there is no global state:
   one-label-per-item summary of `history` or of a request's input).
 - Patch a name in the module that looks it up: `"minime.agent.SYSTEM_PROMPT"`,
   `"minime.agent.date"` and `"minime.agent.OpenAI"` for the agent,
-  `main.Config` (with `from minime import main`) for the entry point.
+  `main.Config` (with `from minime import main`) for the entry point; a
+  stand-in must accept keyword arguments, since `main()` calls
+  `Config(_cli_parse_args=True)`.
 - Build agents in tests with `api.agent()`, never `Agent(settings)`: an
   agent that makes its own OpenAI client sets up TLS, which on macOS starts a
   system thread that outlives the test and breaks the pty tests' fork.
@@ -102,8 +104,10 @@ constructors; there is no global state:
   with `name`, `arguments_model` and `run(args)`, then add it in
   `agent.build_toolbox`. Tool modules import only from `tools`, never from
   each other or from `agent`, which keeps imports one-way. The schema is generated
-  from the arguments model and the subclass docstring is the description sent
-  to the model. `run` raises on bad input; `Toolbox.execute` turns any
+  from the arguments model by the SDK's `openai.pydantic_responses_function_tool`
+  (copied into a plain dict: with the model attached, the SDK would parse
+  arguments itself and abort the turn on invalid ones), and the subclass
+  docstring is the description sent to the model. `run` raises on bad input; `Toolbox.execute` turns any
   exception into `{"ok": False, "message": ...}`.
 - Adding a REPL command: add a method to `Repl` and an entry in
   `Repl.commands` (the name, lower-case with a leading `/`, maps to the
@@ -117,6 +121,11 @@ constructors; there is no global state:
   `OPENAI_MODEL`→`model`, `OPENAI_BASE_URL`→`base_url`,
   `MAX_STEPS_PER_TURN`→`max_steps`,
   `COMMAND_TIMEOUT_SECONDS`→`command_timeout`. Unknown env vars are ignored.
+- Command-line flags come from pydantic-settings' CLI support, enabled only
+  by `main()` (`Config(_cli_parse_args=True)`), so other `Config()` calls never
+  read `sys.argv`; the autouse fixture also sets `sys.argv` to `["minime"]`.
+  Flags are the env var names in kebab case (`--max-steps-per-turn`), booleans
+  are `--x` / `--no-x`, and flags override the environment and `.env`.
 - Bounds on tool arguments go in the arguments model (`Field(ge=1)`), not in
   `run`: strict mode sends them to the model as `minimum` / `maximum`, which
   it honours (checked on gpt-5.4-mini), and pydantic rejects out-of-range

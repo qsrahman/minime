@@ -54,7 +54,7 @@ minime
 
 ## Configuration
 
-Configuration can be provided through environment variables or the `.env` file. Environment variables take precedence:
+Configuration can be provided through command-line flags, environment variables or the `.env` file, in that order of precedence. Each variable below has a matching flag in lower case with dashes, for example `uv run minime --openai-model gpt-5.4 --max-steps-per-turn 8`; switches take `--streaming` / `--no-streaming` form. `uv run minime --help` lists them all. Prefer the environment or `.env` for API keys, since flags show up in shell history and process listings:
 
 | Variable                  | Required | Default           | Description                                           |
 | ------------------------- | -------- | ----------------- | ----------------------------------------------------- |
