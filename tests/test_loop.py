@@ -861,9 +861,9 @@ class TestRepl:
         repl["inputs"] = ["/exit"]
         main.main()
         out = capsys.readouterr().out
-        assert f"model: banner-model | directory: {Path.cwd()}" in out
+        assert out.startswith("AI coding agent | model: banner-model\n")
         assert "Type /help to list commands." in out
-        assert out.endswith("\nGoodbye!\n")
+        assert out.endswith("\nBye.\n")
         assert repl["client_kwargs"] == {
             "api_key": "test-key",
             "base_url": "http://localhost:9/v1",
@@ -885,7 +885,7 @@ class TestRepl:
     ) -> None:
         repl["inputs"] = [signal]
         main.main()
-        assert capsys.readouterr().out.count("Goodbye!") == 1
+        assert capsys.readouterr().out.count("Bye.") == 1
 
     def test_prompts_go_to_one_agent(self, repl: dict[str, Any]) -> None:
         repl["inputs"] = ["first", "second", "/exit"]

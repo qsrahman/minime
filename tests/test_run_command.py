@@ -141,6 +141,14 @@ class TestRunCommand:
             workspace.resolve().parent
         )
 
+    def test_cwd_in_the_home_directory(
+        self, tool: Tools, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert tool.run_command("pwd", cwd="~")["stdout"].strip() == str(
+            tmp_path.resolve()
+        )
+
     def test_cwd_must_be_a_directory(self, tool: Tools, workspace: Path) -> None:
         (workspace / "file.txt").write_text("x")
         with pytest.raises(NotADirectoryError):

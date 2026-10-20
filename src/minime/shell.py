@@ -3,6 +3,7 @@ import signal
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
+from pathlib import Path
 from typing import IO, Any
 
 from pydantic import Field
@@ -91,7 +92,7 @@ class RunCommandTool(Tool[RunCommandArguments]):
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            cwd=args.cwd,
+            cwd=Path(args.cwd).expanduser() if args.cwd else None,
             start_new_session=os.name == "posix",
         )
         assert process.stdout is not None

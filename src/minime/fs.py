@@ -50,7 +50,7 @@ class ReadFileTool(Tool[ReadFileArguments]):
         ):
             raise ValueError("end_line must be greater than or equal to start_line")
 
-        file_path = Path(args.path)
+        file_path = Path(args.path).expanduser()
         first_line = 1 if args.start_line is None else args.start_line
 
         lines: list[str] = []
@@ -106,7 +106,7 @@ class WriteFileTool(Tool[WriteFileArguments]):
     arguments_model = WriteFileArguments
 
     def run(self, args: WriteFileArguments) -> dict[str, Any]:
-        file_path = Path(args.path)
+        file_path = Path(args.path).expanduser()
         file_path.parent.mkdir(parents=True, exist_ok=True)
         mode = "a" if args.append else "w"
         with file_path.open(mode, encoding="utf-8") as file:
@@ -129,7 +129,7 @@ class EditFileTool(Tool[EditFileArguments]):
         if not args.old_content:
             raise ValueError("old_content must not be empty")
 
-        file_path = Path(args.path)
+        file_path = Path(args.path).expanduser()
         existing_content = file_path.read_text(encoding="utf-8", newline="")
 
         old_content, new_content = args.old_content, args.new_content

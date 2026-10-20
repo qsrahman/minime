@@ -187,7 +187,8 @@ def test_ctrl_c_during_a_command_kills_it_and_returns_to_the_prompt(
 @pytest.mark.parametrize("key", [CTRL_C, CTRL_D], ids=["ctrl-c", "ctrl-d"])
 def test_quitting_from_the_prompt(terminal: Terminal, key: bytes) -> None:
     terminal.type(key)
-    terminal.expect(r"Goodbye!")
+    # On a line of its own, not after the "> " the key left the cursor on.
+    terminal.expect(r"\r\nBye\.")
     assert terminal.wait_for_exit() == 0
 
 
@@ -200,5 +201,5 @@ def test_exit_after_an_interrupted_request(
     terminal.type(CTRL_C)
     terminal.expect(PROMPT_AGAIN)
     terminal.type("/exit")
-    terminal.expect(r"Goodbye!")
+    terminal.expect(r"\r\nBye\.")
     assert terminal.wait_for_exit() == 0

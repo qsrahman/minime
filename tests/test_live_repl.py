@@ -74,9 +74,9 @@ def test_banner_turn_commands_and_exit(start: Callable[..., Terminal]) -> None:
     terminal.expect(r"\[History reset\][\s\S]*" + PROMPT)
 
     terminal.type("/exit")
-    terminal.expect(r"Goodbye!")
+    terminal.expect(r"\r\nBye\.")
     assert terminal.wait_for_exit() == 0
-    assert "AI coding agent started" in first_screen
+    assert "AI coding agent | model:" in first_screen
 
 
 def test_memory_and_reset(start: Callable[..., Terminal]) -> None:
@@ -171,12 +171,10 @@ def test_two_quick_ctrl_cs_do_not_crash(start: Callable[..., Terminal]) -> None:
     # Either both land in the turn, or the second one quits at the prompt;
     # what must not happen is a traceback.
     deadline = time.monotonic() + 15
-    while time.monotonic() < deadline and not re.search(
-        r"> $|Goodbye!", terminal.screen
-    ):
+    while time.monotonic() < deadline and not re.search(r"> $|Bye\.", terminal.screen):
         terminal.read(0.1)
     assert "Traceback" not in terminal.screen, terminal.screen
-    if "Goodbye!" in terminal.screen:
+    if "Bye." in terminal.screen:
         assert terminal.wait_for_exit() == 0
 
 
@@ -185,5 +183,5 @@ def test_quitting_from_the_prompt(start: Callable[..., Terminal], key: bytes) ->
     terminal = start()
     answer(terminal, "Reply with exactly: ok")
     terminal.type(key)
-    terminal.expect(r"Goodbye!")
+    terminal.expect(r"\r\nBye\.")
     assert terminal.wait_for_exit() == 0

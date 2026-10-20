@@ -262,7 +262,7 @@ def test_the_program_end_to_end(tmp_path: Path) -> None:
     assert "marker-7431" in result.stdout
     assert "[Context: " not in result.stdout
     assert "[History reset]" in result.stdout
-    assert result.stdout.rstrip().endswith("Goodbye!")
+    assert result.stdout.rstrip().endswith("Bye.")
 
 
 def only_tools(agent: Agent, *names: str) -> Agent:

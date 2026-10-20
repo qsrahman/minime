@@ -1,6 +1,5 @@
 import sys
 from collections.abc import Callable
-from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -31,11 +30,10 @@ class Repl:
 
     def run(self) -> None:
         """Read and handle prompts until the user quits."""
+
         config = self.agent.config
         print(
-            f"AI coding agent started | model: {config.model} | "
-            f"directory: {Path.cwd()}\n"
-            "Type /help to list commands.\n"
+            f"AI coding agent | model: {config.model}\nType /help to list commands.\n"
         )
 
         self.running = True
@@ -43,6 +41,7 @@ class Repl:
             try:
                 prompt = input("> ").strip()
             except KeyboardInterrupt, EOFError:
+                print()  # Ctrl-C / Ctrl-D leave the cursor on the prompt line
                 break
             if not prompt:
                 continue
@@ -58,8 +57,7 @@ class Repl:
                 print(f"[Unknown command: {prompt}. Type /help to list commands.]\n")
             else:
                 self.ask(prompt)
-
-        print("\nGoodbye!")
+        print("Bye.")
 
     def ask(self, prompt: str) -> None:
         """Run one turn, printing its text as it arrives and reporting problems

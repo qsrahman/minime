@@ -119,6 +119,13 @@ class TestReadFile:
         (tmp_path / "abs.txt").write_text("absolute\n")
         assert tool.read_file(str(tmp_path / "abs.txt"))["content"] == "absolute\n"
 
+    def test_home_directory(
+        self, tool: Tools, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / "home.txt").write_text("at home\n")
+        assert tool.read_file("~/home.txt")["content"] == "at home\n"
+
     def test_non_utf8_file(self, tool: Tools, workspace: Path) -> None:
         (workspace / "binary.bin").write_bytes(b"\xff\xfe\x00bad")
         with pytest.raises(UnicodeDecodeError):
@@ -308,6 +315,13 @@ class TestWriteFile:
         tool.write_file("../escape.txt", "x")
         assert (workspace.parent / "escape.txt").read_text() == "x"
 
+    def test_home_directory(
+        self, tool: Tools, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        tool.write_file("~/new/home.txt", "x")
+        assert (tmp_path / "new" / "home.txt").read_text() == "x"
+
 
 class TestEditFile:
     def test_replaces_a_unique_match(self, tool: Tools, workspace: Path) -> None:
@@ -452,3 +466,11 @@ class TestEditFile:
         (workspace.parent / "x.txt").write_text("a")
         tool.edit_file("../x.txt", "a", "b")
         assert (workspace.parent / "x.txt").read_text() == "b"
+
+    def test_home_directory(
+        self, tool: Tools, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / "home.txt").write_text("a")
+        tool.edit_file("~/home.txt", "a", "b")
+        assert (tmp_path / "home.txt").read_text() == "b"

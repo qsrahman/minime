@@ -132,7 +132,7 @@ constructors; there is no global state:
   values from endpoints that ignore the schema.
 - The agent works in the directory it is started from: the tools use paths
   as given, so relative ones (and `run_command`'s `cwd`) start from the
-  current directory. Nothing restricts them; they reach anywhere the user
+  current directory, and a leading `~` is expanded to the home directory. Nothing restricts them; they reach anywhere the user
   can, and `run_command` runs with `shell=True`, unsandboxed.
 - `.env` is read from the project root (`parents[2]` of
   `src/minime/config.py`), wherever the agent is started from. That only

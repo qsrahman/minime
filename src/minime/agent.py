@@ -72,6 +72,7 @@ class Agent:
             base_url=config.base_url,
         )
         self.context = Context()
+
         self.toolbox = build_toolbox(config)
         # Fixed for the agent's life, so built once.
         self.tool_schemas = self.toolbox.schemas()

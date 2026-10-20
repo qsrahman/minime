@@ -24,7 +24,7 @@ uv run minime
 
 Alternatively, put `OPENAI_API_KEY=your-api-key` in a `.env` file in the MiniMe directory. MiniMe loads that file automatically, wherever it is started from. Do not commit your API key.
 
-MiniMe works in the directory you start it from: relative paths and commands start there.
+MiniMe works in the directory you start it from: relative paths and commands start there, and `~` stands for your home directory.
 
 At the `>` prompt, describe a coding task, or enter a command:
 
