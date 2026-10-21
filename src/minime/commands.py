@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, ClassVar, cast, get_args
 from openai.types.shared import ReasoningEffort
 
 if TYPE_CHECKING:
-    from minime.main import Repl
+    from minime.repl import Repl
 
 # The levels /effort accepts: the API's own, plus "default" to send none.
 EFFORT_LEVELS = (*get_args(get_args(ReasoningEffort)[0]), "default")

@@ -19,6 +19,7 @@ from minime import config, tools
 from minime.agent import Agent
 from minime.context import Context
 from minime.main import build_toolbox
+from minime.repl import Repl
 
 ENV_VARS = (
     "OPENAI_API_KEY",
@@ -507,3 +508,27 @@ class Terminal:
             os.kill(self.pid, 9)
             os.waitpid(self.pid, 0)
         os.close(self.fd)
+
+
+# Scripting a turn, shared by the loop and REPL tests.
+
+
+def write(call_id: str, path: str = "out.txt") -> dict[str, Any]:
+    return call_item("write_file", call_id, path=path, content=call_id, append=False)
+
+
+def answer(text: str = "done", **kwargs: Any) -> dict[str, Any]:
+    return response_body(message_item(text), **kwargs)
+
+
+def run(
+    api: Api,
+    history: list[Any] | None = None,
+    prompt: str = "new",
+    conversation: Context | None = None,
+) -> Context:
+    """One turn as the terminal runs it: text and notices are printed, problems
+    are reported rather than raised, and a blank line follows."""
+    agent = api.agent(conversation or Context(history=history or []))
+    Repl(agent).ask(prompt)
+    return agent.context

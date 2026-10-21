@@ -2,7 +2,7 @@
 
 ## Project
 MiniMe is a small interactive coding agent: the package `minime` in
-`src/minime/` (nine modules), written as a handful of classes that get their dependencies through their
+`src/minime/` (ten modules), written as a handful of classes that get their dependencies through their
 constructors; there is no global state:
 - `config.py` — `Config`. `main()` builds it once, reporting invalid settings
   and exiting, and passes it down.
@@ -28,9 +28,12 @@ constructors; there is no global state:
 - `commands.py` — the slash commands: the abstract `Command` base class, one
   subclass per command and `standard_commands()`. Imports `Repl` only for
   type checking.
-- `main.py` — the command line and the composition root: `Repl` (all
-  terminal input and output; it dispatches slash commands to `commands.py`),
-  `CommandCompleter` (Tab completion for the prompt),
+- `repl.py` — the terminal: `Repl` (all terminal input and output; it
+  dispatches slash commands to `commands.py`), `CommandCompleter`,
+  `AnswerMarkdown`, `home_relative` and the look-and-feel constants
+  (`PROMPT`, `THEME`, `KEY_HINTS`, `API_ERROR_HINTS`, …). The only module
+  that imports `prompt_toolkit` or `rich`; it uses `agent` and `commands`.
+- `main.py` — the command line and the composition root:
   `build_toolbox(config)` (the standard tools), `CLI_OPTIONS` and `main()`,
   which loads `Config` from flags, environment and `.env` (reporting invalid
   settings), builds the client, toolbox and agent, and runs `Repl(agent)`.
@@ -72,8 +75,11 @@ constructors; there is no global state:
   `tool_call` (a tool call for `Toolbox.execute`), and `kinds` (a
   one-label-per-item summary of `history` or of a request's input).
 - Patch a name in the module that looks it up: `"minime.agent.SYSTEM_PROMPT"`,
-  `"minime.agent.date"` for the agent, `main.Config` and `main.OpenAI` (with
-  `from minime import main`) for the entry point; a `Config` stand-in must
+  `"minime.agent.date"` for the agent, `main.Config`, `main.OpenAI` and
+  `main.Repl` (with `from minime import main`) for the entry point, and
+  `repl_module.HISTORY_FILE` and the like (`from minime import repl as
+  repl_module`, since tests name their `Repl` instances `repl`) for the
+  terminal; a `Config` stand-in must
   accept keyword arguments, since `main()` passes `CLI_OPTIONS`.
 - Build agents in offline tests with `api.agent()`, which passes the fake
   client: a real OpenAI client sets up TLS, which on macOS starts a system
@@ -81,16 +87,21 @@ constructors; there is no global state:
 - The loop tests (`tests/test_loop.py`) run the real `openai` client: the
   `api` fixture answers its HTTP requests through `httpx2.MockTransport` from
   a script of `response_body(...)` replies, HTTP error responses or exceptions,
-  and records each request body. In `test_loop.py`, `run()` goes through
+  and records each request body. `run()` (in `conftest.py`, with the
+  `write()` and `answer()` reply helpers) goes through
   `Repl.ask` (output printed, problems reported) and `turn()` calls
   `Agent.run_turn` directly (problems raised). There are no stand-in response objects, so
   these tests also catch SDK changes; keep them passing when upgrading `openai`.
-  Use the `streaming` fixture to run a test in both modes. `TestRepl` drives
+  Use the `streaming` fixture to run a test in both modes.
+- The terminal tests (`tests/test_repl.py`): `TestRepl` drives
   `Repl` over a `FakeAgent` (`model`, `run_turn()` and `reset()`) via
   `repl_session(monkeypatch, *inputs)`; only `test_main_wires_up_the_agent`
   goes through `main()`. `TestCommands` passes a real agent on the fake
   API (`repl_session(..., agent=api.agent())`) to check what the commands
-  change in the requests and history.
+  change in the requests and history. The rest check what the user sees:
+  notices, tool lines, spinner, Markdown, colours, title, banner and the
+  prompt session, mostly with `interactive_repl()` (a 40x10 colour
+  terminal console).
 - `tests/test_terminal.py` runs the real `main.main()` as a child process on a
   pseudo-terminal and types Ctrl-C / Ctrl-D at it, with a local HTTP server
   streaming scripted replies. It is the only test of real signal delivery; the

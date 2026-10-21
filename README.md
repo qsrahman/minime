@@ -93,7 +93,7 @@ Web pages and search results are passed to the model as they are. A page can con
 
 ## Development
 
-The project declares its runtime dependencies in `pyproject.toml`. Use `uv sync` to install them and `uv run minime` to start the agent from the project directory. The code is the `minime` package in `src/minime/`, nine modules: `config.py` (settings), `tools.py` (what all tools share: the `Tool` base class and the `Toolbox` that holds them), `fs.py`, `shell.py` and `web.py` (the file, command and web tools), `context.py` (`Context`, the conversation history), `agent.py` (`Agent`, the tool loop), `commands.py` (the slash commands) and `main.py` (`Repl`, the terminal, and the entry point). The terminal uses `prompt_toolkit` for input and `rich` for Markdown.
+The project declares its runtime dependencies in `pyproject.toml`. Use `uv sync` to install them and `uv run minime` to start the agent from the project directory. The code is the `minime` package in `src/minime/`, ten modules: `config.py` (settings), `tools.py` (what all tools share: the `Tool` base class and the `Toolbox` that holds them), `fs.py`, `shell.py` and `web.py` (the file, command and web tools), `context.py` (`Context`, the conversation history), `agent.py` (`Agent`, the tool loop), `commands.py` (the slash commands), `repl.py` (`Repl`, the terminal, using `prompt_toolkit` for input and `rich` for output) and `main.py` (the entry point, which builds everything and starts the terminal).
 
 Run the tests with:
 
