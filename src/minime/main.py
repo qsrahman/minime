@@ -1,7 +1,9 @@
 import math
 import sys
+import time
 from collections.abc import Iterator
 from pathlib import Path
+from textwrap import shorten
 from typing import Any
 
 from openai import OpenAI
@@ -20,6 +22,9 @@ from pydantic import ValidationError
 from rich.cells import cell_len
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+from rich.text import Text
+from rich.theme import Theme
 
 from minime.agent import Agent, TurnError
 from minime.commands import Command, standard_commands
@@ -30,6 +35,17 @@ from minime.tools import Tool, Toolbox
 from minime.web import WebFetchTool, WebSearchTool
 
 HISTORY_FILE = Path("~/.minime_history")
+
+# Plain ANSI colours, which the terminal's own palette adapts to a light or dark
+# background; Rich's defaults put code on a fixed black or dark grey one.
+THEME = Theme(
+    {
+        "markdown.code": "bold cyan",
+        "markdown.code_block": "cyan",
+        "progress.elapsed": "dim",
+    }
+)
+CODE_THEME = "ansi_light"  # plain colours; "ansi_dark" uses the bright ones
 
 
 class CommandCompleter(Completer):
@@ -67,9 +83,13 @@ class Repl:
         self.commands: dict[str, Command] = {
             name: command for command in standard_commands() for name in command.names
         }
-        self.console = Console()
+        self.console = Console(theme=THEME)
         # Model text since the last notice, re-rendered as Markdown once complete.
         self.answer = ""
+        # Shown while nothing is printed: waiting for the model or a tool.
+        self.spinner: Progress | None = None
+        # The tool call now running and when it started.
+        self.tool: tuple[str, float] | None = None
 
     def run(self) -> None:
         """Read and handle prompts until the user quits."""
@@ -97,7 +117,9 @@ class Repl:
             # prompt; longer input such as "/usr/bin is missing" still goes
             # to the model.
             elif line.startswith("/") and " " not in line:
-                self.report(f"Unknown command: {line}. Type /help to list commands.")
+                self.report(
+                    f"Unknown command: {line}. Type /help to list commands.", "yellow"
+                )
             else:
                 self.ask(line)
         print("Bye.")
@@ -135,35 +157,105 @@ class Repl:
     def run_command(self, name: str, command: Command, arg: str) -> None:
         """Run a slash command, checking its argument and reporting failures."""
         if arg and not command.argument:
-            self.report(f"{name} takes no argument")
+            self.report(f"{name} takes no argument", "yellow")
         elif command.argument.startswith("<") and not arg:
-            self.report(f"Usage: {name} {command.argument}")
+            self.report(f"Usage: {name} {command.argument}", "yellow")
         else:
             try:
                 command.run(self, arg)
             except KeyboardInterrupt:
-                self.report("Interrupted; returning to prompt")
+                self.report("Interrupted; returning to prompt", "yellow")
             except Exception as exc:  # noqa: BLE001
-                self.report(f"{name} failed: {type(exc).__name__}: {exc}")
+                self.report(f"{name} failed: {type(exc).__name__}: {exc}", "red")
 
     def ask(self, prompt: str) -> None:
         """Run one turn, printing its text as it arrives and reporting problems
         without leaving the loop."""
         self.last_prompt = prompt
         print()
+        self.start_spinner("thinking")
         try:
-            self.agent.run_turn(prompt, on_text=self.write, on_notice=self.notice)
+            self.agent.run_turn(
+                prompt,
+                on_text=self.write,
+                on_notice=self.turn_notice,
+                on_tool_start=self.tool_start,
+                on_tool_end=self.tool_end,
+            )
         except TurnError as exc:
-            self.notice(str(exc))
+            self.notice(str(exc), "yellow")
         except KeyboardInterrupt:
-            self.notice("Interrupted; returning to prompt")
+            if self.tool:
+                self.show_tool({"ok": False, "message": "interrupted"})
+            self.notice("Interrupted; returning to prompt", "yellow")
         except Exception as exc:  # noqa: BLE001
-            self.notice(f"Agent error: {type(exc).__name__}: {exc}")
+            self.notice(f"Agent error: {type(exc).__name__}: {exc}", "red")
+        self.tool = None
         self.end_answer()
         print()
 
+    def start_spinner(self, label: str) -> None:
+        """Show a spinner with the label and the time elapsed until something
+        is printed; only in an interactive terminal."""
+        self.stop_spinner()
+        if not self.console.is_interactive:
+            return
+        self.spinner = Progress(
+            SpinnerColumn(style="dim"),
+            TextColumn("{task.description}", style="dim", markup=False),
+            TimeElapsedColumn(),
+            console=self.console,
+            transient=True,
+        )
+        self.spinner.add_task(label, total=None)
+        self.spinner.start()
+
+    def stop_spinner(self) -> None:
+        """Erase the spinner, leaving the cursor where it was drawn."""
+        if self.spinner:
+            self.spinner.stop()
+            self.spinner = None
+
+    def turn_notice(self, text: str) -> None:
+        """A notice from the agent during a turn, which then carries on."""
+        self.notice(text)
+        self.start_spinner("thinking")
+
+    def tool_start(self, description: str) -> None:
+        self.end_answer()
+        self.tool = (description, time.monotonic())
+        self.start_spinner(description)
+
+    def tool_end(self, description: str, result: dict[str, Any]) -> None:
+        self.show_tool(result)
+        self.start_spinner("thinking")
+
+    def show_tool(self, result: dict[str, Any]) -> None:
+        """Print the running tool call with how it ended and how long it took:
+        "✓ read_file: x.py  0.1s" or "✗ run_command: pytest  exit 1  2.3s"."""
+        if self.tool is None:
+            return
+        (description, started), self.tool = self.tool, None
+        self.end_answer()
+        line = Text()
+        if result.get("ok"):
+            line.append("✓ ", "green").append(description, "dim")
+        else:
+            if result.get("timed_out"):
+                failure = "timed out"
+            elif result.get("returncode") is not None:
+                failure = f"exit {result['returncode']}"
+            else:
+                message = str(result.get("message", "failed"))
+                failure = shorten(message, 60, placeholder=" …")
+            line.append("✗ ", "red").append(description, "dim")
+            line.append(f"  {failure}", "red")
+        line.append(f"  {time.monotonic() - started:.1f}s", "dim")
+        self.console.print(line, highlight=False, soft_wrap=True)
+
     def write(self, text: str) -> None:
         """Print model text, remembering whether the cursor is at a line start."""
+        self.stop_spinner()
         print(text, end="", flush=True)
         if text:
             self.answer += text
@@ -172,6 +264,7 @@ class Repl:
     def end_answer(self) -> None:
         """Finish the model text printed since the last notice, replacing it
         with its Markdown rendering when the terminal allows."""
+        self.stop_spinner()
         if not self.at_line_start:
             self.write("\n")
         text, self.answer = self.answer, ""
@@ -187,18 +280,19 @@ class Repl:
             return
         # Move the cursor up to where the text started and erase to the end.
         print(f"\033[{rows}F\033[J", end="")
-        console.print(Markdown(text))
+        console.print(Markdown(text, code_theme=CODE_THEME))
 
-    def notice(self, text: str) -> None:
-        """Print a bracketed status line, dimmed, on a line of its own."""
+    def notice(self, text: str, style: str = "dim") -> None:
+        """Print a bracketed status line on a line of its own: dim for
+        status, yellow for warnings and red for errors."""
         self.end_answer()
         self.console.print(
-            f"[{text}]", style="dim", markup=False, highlight=False, soft_wrap=True
+            f"[{text}]", style=style, markup=False, highlight=False, soft_wrap=True
         )
 
-    def report(self, text: str) -> None:
+    def report(self, text: str, style: str = "dim") -> None:
         """Print a command's result as a notice followed by a blank line."""
-        self.notice(text)
+        self.notice(text, style)
         print()
 
 

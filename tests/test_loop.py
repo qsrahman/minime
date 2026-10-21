@@ -6,6 +6,7 @@ names, response parsing.
 """
 
 import json
+import re
 import sys
 from collections.abc import Callable
 from datetime import date
@@ -152,7 +153,10 @@ class TestAnswers:
     ) -> None:
         api.replies = [response_body(message_item("checking"), write("a")), answer()]
         run(api)
-        assert capsys.readouterr().out == "\nchecking\n[write_file: out.txt]\ndone\n\n"
+        assert re.fullmatch(
+            r"\nchecking\n✓ write_file: out\.txt  \d+\.\ds\ndone\n\n",
+            capsys.readouterr().out,
+        )
 
     def test_empty_response_leaves_no_trace(
         self, api: Api, streaming: bool, capsys: pytest.CaptureFixture[str]
@@ -825,6 +829,8 @@ class FakeAgent:
         prompt: str,
         on_text: Callable[[str], None],
         on_notice: Callable[[str], None],
+        on_tool_start: Callable[[str], None],
+        on_tool_end: Callable[[str, dict[str, Any]], None],
     ) -> None:
         self.prompts.append(prompt)
         if prompt == "explode":
@@ -1274,16 +1280,148 @@ class TestNotices:
         assert capsys.readouterr().out == "# Title\n"
 
 
-class TestToolCallNotices:
-    def test_each_call_is_announced_before_it_runs(
+def interactive_repl(monkeypatch: pytest.MonkeyPatch, agent: Any = None) -> Repl:
+    """A Repl whose console is a 40x10 colour terminal."""
+    monkeypatch.setenv("TERM", "xterm")
+    repl = Repl(cast(Agent, agent or FakeAgent()))
+    repl.console = Console(
+        force_terminal=True,
+        color_system="standard",
+        width=40,
+        height=10,
+        theme=main.THEME,
+    )
+    return repl
+
+
+class TestToolCallLines:
+    def test_each_call_is_shown_with_its_outcome(
         self, api: Api, capsys: pytest.CaptureFixture[str]
     ) -> None:
         api.replies = [response_body(write("a"), write("b", "other.txt")), answer()]
         run(api)
+        assert re.search(
+            r"\n✓ write_file: out\.txt  \d+\.\ds\n"
+            r"✓ write_file: other\.txt  \d+\.\ds\ndone\n",
+            capsys.readouterr().out,
+        )
+
+    @pytest.mark.parametrize(
+        ("cmd", "failure"),
+        [("exit 3", "exit 3"), ("sleep 5", "timed out")],
+    )
+    @pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX shell")
+    def test_a_failed_command_shows_why(
+        self, api: Api, capsys: pytest.CaptureFixture[str], cmd: str, failure: str
+    ) -> None:
+        api.replies = [
+            response_body(call_item("run_command", "c", cmd=cmd, timeout=1, cwd=None)),
+            answer(),
+        ]
+        run(api)
+        assert re.search(
+            rf"\n✗ run_command: {cmd}  {failure}  \d+\.\ds\n", capsys.readouterr().out
+        )
+
+    def test_a_tool_error_shows_its_message_shortened(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repl = Repl(cast(Agent, FakeAgent()))
+        repl.tool_start("read_file: x")
+        repl.tool_end("read_file: x", {"ok": False, "message": "No such file " * 10})
         out = capsys.readouterr().out
-        assert "[write_file: out.txt]\n[write_file: other.txt]\ndone" in out
-        # Before, not after: the first file did not exist when it was announced.
-        assert out.index("[write_file: out.txt]") < out.index("done")
+        assert out.startswith("✗ read_file: x  No such file No such file")
+        assert re.search(r" …  \d+\.\ds\n$", out)
+
+    def test_ctrl_c_marks_the_running_call_interrupted(
+        self,
+        api: Api,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def interrupt(call: Any) -> dict[str, Any]:
+            raise KeyboardInterrupt
+
+        api.replies = [response_body(write("a"))]
+        agent = api.agent()
+        monkeypatch.setattr(agent.toolbox, "execute", interrupt)
+        Repl(agent).ask("go")
+        assert re.search(
+            r"\n✗ write_file: out\.txt  interrupted  \d+\.\ds\n"
+            r"\[Interrupted; returning to prompt\]\n",
+            capsys.readouterr().out,
+        )
+
+
+class TestLook:
+    """Spinner, colours and code blocks in an interactive terminal."""
+
+    def test_spinner_runs_until_text_arrives_and_leaves_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repl = interactive_repl(monkeypatch)
+        repl.start_spinner("thinking")
+        assert repl.spinner is not None and repl.spinner.live.is_started
+        repl.write("hi\n")
+        assert repl.spinner is None
+        out = capsys.readouterr().out
+        assert out.endswith("hi\n")
+        assert "thinking" not in out.split("\x1b[2K")[-1]  # erased before the text
+
+    def test_no_spinner_when_output_is_not_a_terminal(self) -> None:
+        repl = Repl(cast(Agent, FakeAgent()))
+        repl.start_spinner("thinking")
+        assert repl.spinner is None
+
+    def test_spinner_shows_the_running_tool(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repl = interactive_repl(monkeypatch)
+        repl.tool_start("run_command: make")
+        assert repl.spinner is not None
+        assert repl.spinner.tasks[0].description == "run_command: make"
+        repl.tool_end("run_command: make", {"ok": True})
+        assert repl.spinner.tasks[0].description == "thinking"
+        repl.stop_spinner()
+
+    @pytest.mark.parametrize(
+        ("style", "code"),
+        [("dim", "\x1b[2m"), ("yellow", "\x1b[33m"), ("red", "\x1b[31m")],
+    )
+    def test_notices_are_coloured_by_kind(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        style: str,
+        code: str,
+    ) -> None:
+        interactive_repl(monkeypatch).notice("note", style)
+        assert capsys.readouterr().out == f"{code}[note]\x1b[0m\n"
+
+    @pytest.mark.parametrize(
+        ("prompt", "code"), [("explode", "\x1b[31m"), ("give up", "\x1b[33m")]
+    )
+    def test_errors_are_red_and_warnings_yellow(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        prompt: str,
+        code: str,
+    ) -> None:
+        repl = interactive_repl(monkeypatch)
+        repl.ask(prompt)
+        repl.stop_spinner()
+        assert f"{code}[" in capsys.readouterr().out
+
+    def test_code_has_no_background(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repl = interactive_repl(monkeypatch)
+        repl.write("Use `x`:\n```python\nprint(1)\n```\n")
+        repl.end_answer()
+        rendered = capsys.readouterr().out.split("\x1b[J", 1)[1]
+        assert "print" in rendered
+        assert not re.search(r"\x1b\[[0-9;]*(4\d|48;)", rendered)  # no background
 
 
 class TestPromptSession:

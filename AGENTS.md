@@ -19,8 +19,8 @@ constructors; there is no global state:
   every change to the history (adding prompts, steps and summaries, trimming,
   reset), plus `json_bytes`.
 - `agent.py` — the system prompt, `TurnError` and `Agent` (the tool
-  loop; prints nothing, reports through `on_text` / `on_notice` callbacks and
-  raises `TurnError`). `Agent(config, client, toolbox)` is given its OpenAI
+  loop; prints nothing, reports through `on_text` / `on_notice` /
+  `on_tool_start` / `on_tool_end` callbacks and raises `TurnError`). `Agent(config, client, toolbox)` is given its OpenAI
   client and tools; it imports only `config`, `context` and `tools`, never
   the concrete tool modules. For the commands it also has `model` and
   `reasoning_effort` (changeable between turns), `last_usage`, `reset()`,
@@ -125,9 +125,21 @@ constructors; there is no global state:
   wrapped screen rows with `rich.cells.cell_len`, and leaves the text raw when
   stdout is not a terminal, the terminal is dumb, or the text is as tall as
   the screen (its start has scrolled off and cannot be erased).
-- Before each tool runs, `run_turn` passes `Toolbox.describe(call)` to
-  `on_notice`: the name and the first non-empty string argument in the
-  arguments model's field order, since the model's argument order varies.
+- Around each tool call `run_turn` calls `on_tool_start(description)` and
+  `on_tool_end(description, result)`; the description is
+  `Toolbox.describe(call)`, the name and the first non-empty string argument
+  in the arguments model's field order, since the model's argument order
+  varies. `Repl` shows the running call in its spinner, then prints it with
+  ✓ or ✗, why it failed (`exit N`, `timed out`, the message, `interrupted`
+  on Ctrl-C) and how long it took.
+- `Repl` shows a Rich `Progress` spinner (transient, so it erases itself)
+  while nothing is printed: from the start of a turn, after each notice, and
+  while a tool runs. Every output path (`write`, `end_answer`, so `notice`)
+  stops it first, and it only runs when `console.is_interactive`, so it never
+  appears in tests, pipes or the pty tests' dumb terminal. Notices take a
+  style: dim by default, `yellow` for warnings, `red` for errors. `THEME`
+  and `CODE_THEME` keep Markdown code in plain ANSI colours with no
+  background, so it suits light and dark terminals.
 - Adding a tool: in `fs.py`, `shell.py`, `web.py` or a new module beside them,
   write a `ToolArguments` subclass for its parameters and a `Tool` subclass
   with `name`, `arguments_model` and `run(args)`, then add it in

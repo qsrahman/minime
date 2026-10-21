@@ -125,13 +125,18 @@ class Agent:
         prompt: str,
         on_text: Callable[[str], None] = lambda text: None,
         on_notice: Callable[[str], None] = lambda text: None,
+        on_tool_start: Callable[[str], None] = lambda description: None,
+        on_tool_end: Callable[[str, dict[str, Any]], None] = lambda d, r: None,
     ) -> None:
         """Run one user turn, handling function calls until the model gives a
         final answer.
 
         on_text receives the model's text as it arrives; each response's text
-        ends with a newline. on_notice receives status messages. A turn that
-        ends before any step completed leaves no trace in the history.
+        ends with a newline. on_notice receives status messages. on_tool_start
+        receives a short description of each tool call before it runs
+        ("run_command: pytest -q"), and on_tool_end the same description and
+        the result once it has. A turn that ends before any step completed
+        leaves no trace in the history.
 
         Raises:
             TurnError: If the turn ends without a final answer.
@@ -184,8 +189,10 @@ class Agent:
                 results: list[dict[str, Any]] = []
                 try:
                     for call in tool_calls:
-                        on_notice(self.toolbox.describe(call))
+                        description = self.toolbox.describe(call)
+                        on_tool_start(description)
                         results.append(self.toolbox.execute(call))
+                        on_tool_end(description, results[-1])
                 finally:
                     # Record the step even when Ctrl-C interrupts a tool.
                     context.add_step(response.output, tool_calls, results)

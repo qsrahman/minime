@@ -8,21 +8,52 @@ Ideas for later, roughly in order of value for effort.
    the model as a tool result. `/approve on|off` turns it off for trusted
    sessions. Matters more now that the tools are not confined to a workspace.
    Each call is already announced before it runs (`Toolbox.describe`).
-2. **Show how each tool call ended** in its notice: failed or not, a
-   command's exit code, and how long it took. Needs a second callback after
-   `Toolbox.execute`, or the notice printed afterwards.
-3. **Mark `test_ctrl_c_while_an_answer_streams` as a non-strict xfail.** It
+2. **Mark `test_ctrl_c_while_an_answer_streams` as a non-strict xfail.** It
    fails on most gpt-5.4-mini runs because pydantic-core loses the interrupt
    (see the known limitation in `AGENTS.md`).
-4. **`/save <file>` and `/load <file>`.** History mixes plain dicts and SDK
+3. **`/save <file>` and `/load <file>`.** History mixes plain dicts and SDK
    objects, so saving needs `model_dump()`.
-5. **Load project instructions.** Read `AGENTS.md` (or `CLAUDE.md`) from the
+4. **Load project instructions.** Read `AGENTS.md` (or `CLAUDE.md`) from the
    working directory and append it to the instructions, after the static
    prompt and before or with the Environment section, so the cached prefix
    stays the same. Every major coding agent does this to pick up a project's
    build commands and conventions. Decide whether to look in parent
    directories too, and cap its size so a large file cannot crowd out the
    history.
+
+## Done
+
+Finished on the `tui` branch:
+
+- [x] **Show tool calls as they happen.** Each call is announced before it
+  runs, e.g. `[run_command: pytest -q]` (`Toolbox.describe`).
+- [x] **Better input with prompt_toolkit.** History kept across sessions, Tab
+  completion of `/commands` and of directories after `/cd`, Esc-Enter for a
+  new line, and a status bar; replaces the `readline` import.
+- [x] **Markdown answers with Rich.** Answers stream raw and are redrawn as
+  Markdown once complete.
+- [x] **Input history file** (`~/.minime_history`), through prompt_toolkit.
+- [x] **A pasted multi-line block becomes several prompts** (command line):
+  bracketed paste keeps it one prompt.
+- [x] **Show how each tool call ended:** `✓` or `✗`, the exit code, timeout
+  or message, and how long it took (`on_tool_start` / `on_tool_end`).
+- [x] **A spinner while waiting** for the model or a tool, with the time
+  elapsed.
+- [x] **Notices coloured by kind:** dim status, yellow warnings, red errors.
+- [x] **Code in the terminal's own colours,** with no fixed background.
+
+## Look
+
+Smaller improvements to the terminal's appearance, not yet done:
+
+1. **Banner and prompt:** a one-line styled header (`minime · model · ~/proj`)
+   and a coloured `›` prompt.
+2. **Cap the Markdown width** at about 100 columns on wide terminals.
+3. **Separate turns** with a dim rule, or the prompt echoed in colour.
+4. **`/help` and `/context` as Rich tables,** with a bar for context use.
+5. **Diffs for `edit_file` and `write_file`** under their lines; best with
+   approvals (item 1).
+6. **Clickable paths** in tool lines (OSC-8 hyperlinks).
 
 ## Command line
 
@@ -54,7 +85,7 @@ Additions:
 5. **`!command` shell escape:** run `!git status` without asking the model;
    show the output and optionally add it to the conversation.
 6. **`--continue`** to reopen the last session, on top of `/save` and
-   `/load` (item 4 above).
+   `/load` (item 3 above).
 
 Suggested order: 1, then 3 and 2; 4 and 5 are cheap extras.
 
