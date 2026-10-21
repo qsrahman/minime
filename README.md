@@ -26,7 +26,7 @@ Alternatively, put `OPENAI_API_KEY=your-api-key` in a `.env` file in the MiniMe 
 
 MiniMe works in the directory you start it from: relative paths and commands start there, and `~` stands for your home directory.
 
-At the `>` prompt, describe a coding task, or enter a command:
+MiniMe starts with a line naming the model and the working directory. At the `›` prompt, describe a coding task, or enter a command:
 
 | Command | Effect |
 | --- | --- |
@@ -42,7 +42,7 @@ At the `>` prompt, describe a coding task, or enter a command:
 | `/clear` | Clear the screen; the conversation is kept. |
 | `/exit`, `/quit` | End the session. |
 
-In a terminal the prompt has line editing: Up and Down recall earlier input, kept across sessions in `~/.minime_history`; Tab completes command names, and directories after `/cd`; Esc then Enter starts a new line, and pasted text stays one prompt however many lines it has. The bar at the bottom shows the model, the reasoning effort and how much of the context limit the last request used. While the agent works, a spinner shows what it is waiting for (the model, or the tool call that is running) and for how long. Each tool call is then listed with how it ended and how long it took, such as `✓ read_file: src/app.py  0.0s` or `✗ run_command: pytest -q  exit 1  2.3s`. Notices are dim, warnings (an interrupted or stopped turn) yellow and errors red. Answers stream as plain text and are redrawn as formatted Markdown once complete, with code in the terminal's own colours; an answer taller than the screen stays plain, since its start has scrolled away.
+In a terminal the prompt has line editing: Up and Down recall earlier input, kept across sessions in `~/.minime_history`; Tab completes command names, and directories after `/cd`; Esc then Enter starts a new line, and pasted text stays one prompt however many lines it has. The bar at the bottom shows the model, the reasoning effort and how much of the context limit the last request used. While the agent works, a spinner shows what it is waiting for (the model, or the tool call that is running) and for how long. Each tool call is then listed with how it ended and how long it took, such as `✓ read_file: src/app.py  0.0s` or `✗ run_command: pytest -q  exit 1  2.3s`. Notices are dim, warnings (an interrupted or stopped turn) yellow and errors red. Answers stream as plain text and are redrawn as formatted Markdown once complete, at most 100 columns wide, with code in the terminal's own colours; an answer taller than the screen stays plain, since its start has scrolled away.
 
 Command names ignore case. A line that starts with a command runs it, with the rest of the line as its argument. A single word starting with `/` that is not a command is reported as unknown; other input, such as `/usr/bin is missing`, goes to the model. Press Ctrl-C while the agent is working to stop the current request and return to the prompt; press it at the prompt to quit. With fast-streaming models a Ctrl-C during an answer is sometimes lost (Python prints "Exception ignored … KeyboardInterrupt" and the answer continues); press it again. Steps the agent had already completed stay in the conversation, so you can ask it to continue.
 

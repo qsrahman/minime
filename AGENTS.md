@@ -139,7 +139,12 @@ constructors; there is no global state:
   appears in tests, pipes or the pty tests' dumb terminal. Notices take a
   style: dim by default, `yellow` for warnings, `red` for errors. `THEME`
   and `CODE_THEME` keep Markdown code in plain ANSI colours with no
-  background, so it suits light and dark terminals.
+  background, so it suits light and dark terminals. The redrawn answer is at
+  most `MAX_ANSWER_WIDTH` (100) columns wide; the row count for erasing the
+  raw text still uses the full terminal width, at which it was printed.
+- The prompt is `PROMPT` ("› ", cyan in `prompt_toolkit`); the pty tests
+  wait for `› $`. The banner is `minime · <model> · <cwd>`, the cwd shortened
+  by `home_relative`.
 - Adding a tool: in `fs.py`, `shell.py`, `web.py` or a new module beside them,
   write a `ToolArguments` subclass for its parameters and a `Tool` subclass
   with `name`, `arguments_model` and `run(args)`, then add it in

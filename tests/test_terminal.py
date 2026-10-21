@@ -125,7 +125,7 @@ def terminal(endpoint: Endpoint, workspace: Path) -> Iterator[Terminal]:
     session = Terminal([sys.executable, "-c", LAUNCH], env, workspace)
     endpoint.start()
     try:
-        session.expect(r"> $")
+        session.expect(r"› $")
         yield session
     finally:
         session.close()
@@ -145,7 +145,7 @@ def test_ctrl_c_during_a_streamed_answer_returns_to_the_prompt(
 
     # The agent is still usable, and the abandoned request left no trace.
     terminal.type("are you there?")
-    terminal.expect(r"still here[\s\S]*> $")
+    terminal.expect(r"still here[\s\S]*› $")
     assert kinds(endpoint.requests[1]["input"]) == ["user:are you there?"]
 
 
@@ -175,7 +175,7 @@ def test_ctrl_c_during_a_command_kills_it_and_returns_to_the_prompt(
 
     # The next request tells the model its command was interrupted.
     terminal.type("what happened?")
-    terminal.expect(r"understood[\s\S]*> $")
+    terminal.expect(r"understood[\s\S]*› $")
     assert kinds(endpoint.requests[1]["input"]) == [
         "user:run the slow thing",
         "call:call_1",
@@ -187,7 +187,7 @@ def test_ctrl_c_during_a_command_kills_it_and_returns_to_the_prompt(
 @pytest.mark.parametrize("key", [CTRL_C, CTRL_D], ids=["ctrl-c", "ctrl-d"])
 def test_quitting_from_the_prompt(terminal: Terminal, key: bytes) -> None:
     terminal.type(key)
-    # On a line of its own, not after the "> " the key left the cursor on.
+    # On a line of its own, not after the "› " the key left the cursor on.
     terminal.expect(r"\r\nBye\.")
     assert terminal.wait_for_exit() == 0
 

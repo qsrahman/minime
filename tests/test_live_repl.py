@@ -23,7 +23,7 @@ pytestmark = [
     pytest.mark.pty,
     pytest.mark.skipif(os.name != "posix", reason="needs a pseudo-terminal"),
 ]
-PROMPT = r"> $"
+PROMPT = r"› $"
 
 
 @pytest.fixture
@@ -76,7 +76,7 @@ def test_banner_turn_commands_and_exit(start: Callable[..., Terminal]) -> None:
     terminal.type("/exit")
     terminal.expect(r"\r\nBye\.")
     assert terminal.wait_for_exit() == 0
-    assert "AI coding agent | model:" in first_screen
+    assert "minime · " in first_screen
 
 
 def test_memory_and_reset(start: Callable[..., Terminal]) -> None:
@@ -172,7 +172,7 @@ def test_two_quick_ctrl_cs_do_not_crash(start: Callable[..., Terminal]) -> None:
     # Either both land in the turn, or the second one quits at the prompt;
     # what must not happen is a traceback.
     deadline = time.monotonic() + 15
-    while time.monotonic() < deadline and not re.search(r"> $|Bye\.", terminal.screen):
+    while time.monotonic() < deadline and not re.search(r"› $|Bye\.", terminal.screen):
         terminal.read(0.1)
     assert "Traceback" not in terminal.screen, terminal.screen
     if "Bye." in terminal.screen:

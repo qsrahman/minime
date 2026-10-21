@@ -2,6 +2,7 @@ import math
 import sys
 import time
 from collections.abc import Iterator
+from functools import partial
 from pathlib import Path
 from textwrap import shorten
 from typing import Any
@@ -18,6 +19,7 @@ from prompt_toolkit.completion import (
 from prompt_toolkit.document import Document
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.styles import Style
 from pydantic import ValidationError
 from rich.cells import cell_len
 from rich.console import Console
@@ -35,6 +37,9 @@ from minime.tools import Tool, Toolbox
 from minime.web import WebFetchTool, WebSearchTool
 
 HISTORY_FILE = Path("~/.minime_history")
+PROMPT = "› "
+# Answers wider than this are hard to read on a wide terminal.
+MAX_ANSWER_WIDTH = 100
 
 # Plain ANSI colours, which the terminal's own palette adapts to a light or dark
 # background; Rich's defaults put code on a fixed black or dark grey one.
@@ -46,6 +51,13 @@ THEME = Theme(
     }
 )
 CODE_THEME = "ansi_light"  # plain colours; "ansi_dark" uses the bright ones
+
+
+def home_relative(path: Path) -> str:
+    """The path with the home directory shortened to "~"."""
+    if not path.is_relative_to(Path.home()):
+        return str(path)
+    return str(Path("~") / path.relative_to(Path.home()))
 
 
 class CommandCompleter(Completer):
@@ -93,16 +105,24 @@ class Repl:
 
     def run(self) -> None:
         """Read and handle prompts until the user quits."""
-        print(
-            f"AI coding agent | model: {self.agent.model}\n"
-            "Type /help to list commands.\n"
+        self.console.print(
+            Text.assemble(
+                ("minime", "bold"),
+                (f" · {self.agent.model} · {home_relative(Path.cwd())}", "dim"),
+            ),
+            highlight=False,
+            soft_wrap=True,
         )
+        self.console.print("Type /help to list commands.\n", style="dim")
 
-        read_line = self.prompt_session().prompt if sys.stdin.isatty() else input
+        if sys.stdin.isatty():
+            read_line = self.prompt_session().prompt
+        else:
+            read_line = partial(input, PROMPT)
         self.running = True
         while self.running:
             try:
-                line = read_line("> ").strip()
+                line = read_line().strip()
             except KeyboardInterrupt, EOFError:
                 print()  # Ctrl-C / Ctrl-D leave the cursor on the prompt line
                 break
@@ -135,6 +155,8 @@ class Repl:
             event.current_buffer.insert_text("\n")
 
         return PromptSession(
+            message=[("class:prompt", PROMPT)],
+            style=Style.from_dict({"prompt": "ansicyan bold"}),
             history=FileHistory(HISTORY_FILE.expanduser()),
             completer=CommandCompleter(list(self.commands)),
             key_bindings=bindings,
@@ -280,7 +302,10 @@ class Repl:
             return
         # Move the cursor up to where the text started and erase to the end.
         print(f"\033[{rows}F\033[J", end="")
-        console.print(Markdown(text, code_theme=CODE_THEME))
+        console.print(
+            Markdown(text, code_theme=CODE_THEME),
+            width=min(console.width, MAX_ANSWER_WIDTH),
+        )
 
     def notice(self, text: str, style: str = "dim") -> None:
         """Print a bracketed status line on a line of its own: dim for

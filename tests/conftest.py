@@ -435,7 +435,7 @@ def kinds(items: list[Any]) -> list[str]:
 
 CTRL_C = b"\x03"
 CTRL_D = b"\x04"
-PROMPT_AGAIN = r"\[Interrupted; returning to prompt\][\s\S]*> $"
+PROMPT_AGAIN = r"\[Interrupted; returning to prompt\][\s\S]*› $"
 
 
 def process_is_gone(pid: int, wait_seconds: float = 0) -> bool:

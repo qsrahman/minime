@@ -41,19 +41,18 @@ Finished on the `tui` branch:
   elapsed.
 - [x] **Notices coloured by kind:** dim status, yellow warnings, red errors.
 - [x] **Code in the terminal's own colours,** with no fixed background.
+- [x] **Banner and prompt:** `minime · model · ~/proj` and a cyan `›` prompt.
+- [x] **Markdown answers capped at 100 columns** on wide terminals.
 
 ## Look
 
 Smaller improvements to the terminal's appearance, not yet done:
 
-1. **Banner and prompt:** a one-line styled header (`minime · model · ~/proj`)
-   and a coloured `›` prompt.
-2. **Cap the Markdown width** at about 100 columns on wide terminals.
-3. **Separate turns** with a dim rule, or the prompt echoed in colour.
-4. **`/help` and `/context` as Rich tables,** with a bar for context use.
-5. **Diffs for `edit_file` and `write_file`** under their lines; best with
+1. **Separate turns** with a dim rule, or the prompt echoed in colour.
+2. **`/help` and `/context` as Rich tables,** with a bar for context use.
+3. **Diffs for `edit_file` and `write_file`** under their lines; best with
    approvals (item 1).
-6. **Clickable paths** in tool lines (OSC-8 hyperlinks).
+4. **Clickable paths** in tool lines (OSC-8 hyperlinks).
 
 ## Command line
 

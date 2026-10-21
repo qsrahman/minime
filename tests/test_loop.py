@@ -32,7 +32,7 @@ from conftest import (
 from minime import config, main, shell
 from minime.agent import SUMMARY_REQUEST, SYSTEM_PROMPT, Agent, TurnError
 from minime.context import OMITTED_TOOL_OUTPUT, SUMMARY_MARKER, Context, json_bytes
-from minime.main import Repl, build_toolbox
+from minime.main import Repl, build_toolbox, home_relative
 
 
 def write(call_id: str, path: str = "out.txt") -> dict[str, Any]:
@@ -895,7 +895,7 @@ class TestRepl:
     ) -> None:
         repl_session(monkeypatch, "/exit")
         out = capsys.readouterr().out
-        assert out.startswith("AI coding agent | model: fake-model\n")
+        assert out.startswith(f"minime · fake-model · {home_relative(Path.cwd())}\n")
         assert "Type /help to list commands." in out
         assert out.endswith("\nBye.\n")
 
@@ -1413,6 +1413,18 @@ class TestLook:
         repl.stop_spinner()
         assert f"{code}[" in capsys.readouterr().out
 
+    def test_answers_are_at_most_100_columns_wide(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repl = interactive_repl(monkeypatch)
+        repl.console.width = 150
+        repl.write("word " * 60 + "\n")
+        repl.end_answer()
+        rendered = capsys.readouterr().out.split("\x1b[J", 1)[1]
+        lines = rendered.rstrip("\n").split("\n")
+        assert len(lines) == 3
+        assert max(len(line.rstrip()) for line in lines) <= 100
+
     def test_code_has_no_background(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -1424,7 +1436,28 @@ class TestLook:
         assert not re.search(r"\x1b\[[0-9;]*(4\d|48;)", rendered)  # no background
 
 
+class TestBanner:
+    @pytest.mark.parametrize(("relative", "shown"), [(".", "~"), ("a/b", "~/a/b")])
+    def test_home_is_shortened(self, relative: str, shown: str) -> None:
+        assert home_relative(Path.home() / relative) == shown
+
+    def test_other_paths_are_kept(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        assert home_relative(tmp_path / "work") == str(tmp_path / "work")
+
+
 class TestPromptSession:
+    def test_prompt_is_a_coloured_arrow(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(main, "HISTORY_FILE", tmp_path / "history")
+        session = Repl(cast(Agent, FakeAgent())).prompt_session()
+        assert session.message == [("class:prompt", "› ")]
+        assert session.style is not None
+        assert session.style.get_attrs_for_style_str("class:prompt").color == "ansicyan"
+
     def test_status_shows_model_effort_and_context_use(self, api: Api) -> None:
         agent = api.agent()
         repl = Repl(agent)
