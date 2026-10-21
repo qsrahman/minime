@@ -1,5 +1,7 @@
 import inspect
+import json
 from abc import ABC, abstractmethod
+from textwrap import shorten
 from typing import Any, ClassVar, cast
 
 import openai
@@ -50,6 +52,21 @@ class Toolbox:
 
     def schemas(self) -> list[ToolParam]:
         return [tool.schema() for tool in self.tools.values()]
+
+    def describe(self, call: ResponseFunctionToolCall) -> str:
+        """The call's name and its first text argument in the tool's field
+        order (the model's order varies), e.g. "write_file: src/x.py"."""
+        tool = self.tools.get(call.name)
+        try:
+            arguments = json.loads(call.arguments)
+        except ValueError:
+            arguments = None
+        if tool and isinstance(arguments, dict):
+            for field in tool.arguments_model.model_fields:
+                value = arguments.get(field)
+                if isinstance(value, str) and value.strip():
+                    return f"{call.name}: {shorten(value, 80, placeholder=' …')}"
+        return call.name
 
     def execute(self, call: ResponseFunctionToolCall) -> dict[str, Any]:
         """Execute a single function call and normalize failures into a result payload."""

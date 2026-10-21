@@ -458,7 +458,8 @@ class Terminal:
         self.pid, self.fd = pty.fork()
         if self.pid == 0:  # the child: become the agent, touching as little as possible
             os.chdir(cwd)
-            os.execve(argv[0], argv, {**env, "TERM": "dumb"})
+            # HOME is the workspace, so the input history file lands there.
+            os.execve(argv[0], argv, {**env, "TERM": "dumb", "HOME": str(cwd)})
         self.screen = ""
         self.exit_code: int | None = None
 

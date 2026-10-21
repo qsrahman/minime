@@ -196,3 +196,33 @@ class TestExecuteToolCall:
         monkeypatch.setattr(toolbox.tools["run_command"], "run", interrupted)
         with pytest.raises(KeyboardInterrupt):
             toolbox.execute(tool_call("run_command", cmd="x", timeout=None, cwd=None))
+
+
+class TestDescribe:
+    def test_first_text_argument_in_field_order(self, toolbox: tools.Toolbox) -> None:
+        # The model put content first; path comes first in WriteFileArguments.
+        call = raw_tool_call(
+            "write_file", '{"append": false, "content": "x", "path": "src/x.py"}'
+        )
+        assert toolbox.describe(call) == "write_file: src/x.py"
+
+    @pytest.mark.parametrize(
+        ("arguments", "shown"),
+        [
+            ('{"cmd": "pytest -q", "cwd": null}', "run_command: pytest -q"),
+            ('{"cwd": "/tmp", "cmd": "ls"}', "run_command: ls"),
+            ('{"cmd": "  a\\n  b  "}', "run_command: a b"),
+            ('{"cmd": "' + "x " * 60 + '"}', "run_command: " + "x " * 38 + "x …"),
+            ('{"cmd": "", "cwd": "sub"}', "run_command: sub"),
+            ('{"timeout": 3}', "run_command"),
+            ("not json", "run_command"),
+            ("[1]", "run_command"),
+        ],
+    )
+    def test_shows_name_and_a_short_argument(
+        self, toolbox: tools.Toolbox, arguments: str, shown: str
+    ) -> None:
+        assert toolbox.describe(raw_tool_call("run_command", arguments)) == shown
+
+    def test_unknown_tool_shows_its_name(self, toolbox: tools.Toolbox) -> None:
+        assert toolbox.describe(tool_call("nope", path="x")) == "nope"

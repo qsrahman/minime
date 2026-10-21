@@ -1,31 +1,22 @@
 # TODO
 
-Ideas for later, roughly in order of value for effort. 1 and 2 belong
-together: one shows what the agent does, the other lets you stop it first.
+Ideas for later, roughly in order of value for effort.
 
-1. **Show tool calls as they happen.** Before each tool runs, `Agent` calls
-   `on_notice` with its name and key argument: `[run_command: pytest -q]`,
-   `[write_file: src/x.py]`, `[web_fetch: https://…]`. Today nothing is shown
-   while tools run, so a long step looks like a hang.
-2. **Ask before side-effecting tools.** A `needs_approval` flag on
+1. **Ask before side-effecting tools.** A `needs_approval` flag on
    `run_command`, `write_file` and `edit_file`; an `approve` callback the agent
    calls before them; `Repl` asks `Run? [y/N]`. A declined call goes back to
    the model as a tool result. `/approve on|off` turns it off for trusted
    sessions. Matters more now that the tools are not confined to a workspace.
-3. **Better input with prompt_toolkit.** Multi-line prompts, history kept
-   across sessions, Tab completion of `/commands` (from `Repl.commands`) and of
-   paths after `/cd`. Replaces the `readline` import; a new dependency.
-4. **Markdown answers with Rich.** Stream raw text as now and re-render each
-   answer once it is complete (Rich `Live` redraws badly when output
-   overflows the screen). A new dependency.
-5. **Input history file** (`~/.minime_history`) through `readline`, if 3 is
-   not done.
-6. **Mark `test_ctrl_c_while_an_answer_streams` as a non-strict xfail.** It
+   Each call is already announced before it runs (`Toolbox.describe`).
+2. **Show how each tool call ended** in its notice: failed or not, a
+   command's exit code, and how long it took. Needs a second callback after
+   `Toolbox.execute`, or the notice printed afterwards.
+3. **Mark `test_ctrl_c_while_an_answer_streams` as a non-strict xfail.** It
    fails on most gpt-5.4-mini runs because pydantic-core loses the interrupt
    (see the known limitation in `AGENTS.md`).
-7. **`/save <file>` and `/load <file>`.** History mixes plain dicts and SDK
+4. **`/save <file>` and `/load <file>`.** History mixes plain dicts and SDK
    objects, so saving needs `model_dump()`.
-8. **Load project instructions.** Read `AGENTS.md` (or `CLAUDE.md`) from the
+5. **Load project instructions.** Read `AGENTS.md` (or `CLAUDE.md`) from the
    working directory and append it to the instructions, after the static
    prompt and before or with the Environment section, so the cached prefix
    stays the same. Every major coding agent does this to pick up a project's
@@ -37,19 +28,14 @@ together: one shows what the agent does, the other lets you stop it first.
 
 Problems first, since each silently does the wrong thing today:
 
-1. **A pasted multi-line block becomes several prompts.** `input()` reads
-   one line at a time, so pasting a log or a snippet sends each line as its
-   own turn. prompt_toolkit's multi-line input with bracketed paste (item 3)
-   fixes it; without it, a continuation convention (a trailing `\` or a
-   `"""` block) would do.
-2. **Ctrl-C at the prompt ends the session and loses the conversation,** and
+1. **Ctrl-C at the prompt ends the session and loses the conversation,** and
    because of the lost-interrupt limitation a second press often lands there.
-   Make Ctrl-C at the prompt clear the line, as `python` and `bash` do, and
-   leave quitting to Ctrl-D, `/exit` and `/quit`. Also catch
-   `KeyboardInterrupt` around the whole loop body: one that arrives while
-   `Repl.ask` prints its "Interrupted" notice now ends the program with a
-   traceback. A few lines.
-3. **Installed copies cannot be configured from a file.** `.env` is read only
+   Make Ctrl-C at the prompt clear the line, as `python` and `bash` do (a
+   `prompt_toolkit` key binding), and leave quitting to Ctrl-D, `/exit` and
+   `/quit`. Also catch `KeyboardInterrupt` around the whole loop body: one
+   that arrives while `Repl.ask` prints its "Interrupted" notice now ends the
+   program with a traceback. A few lines.
+2. **Installed copies cannot be configured from a file.** `.env` is read only
    from the source tree, so after `uv tool install .` only environment
    variables and flags remain. Add a user config file such as
    `~/.config/minime/config.toml` (pydantic-settings'
@@ -58,25 +44,24 @@ Problems first, since each silently does the wrong thing today:
 
 Additions:
 
-4. **One-shot mode:** `minime "explain this error"` or
+3. **One-shot mode:** `minime "explain this error"` or
    `git diff | minime "review this"` runs one turn, prints the answer and
    exits with status 0, or 1 on a `TurnError` or API error. When input is
    piped, show no banner or prompts and send notices to stderr, so stdout
    carries only the answer. A positional argument via pydantic-settings'
    `CliPositionalArg` plus `isatty()` checks; about 40 lines and tests.
-5. **`--version`** from the package metadata (`importlib.metadata`).
-6. **`!command` shell escape:** run `!git status` without asking the model;
+4. **`--version`** from the package metadata (`importlib.metadata`).
+5. **`!command` shell escape:** run `!git status` without asking the model;
    show the output and optionally add it to the conversation.
-7. **`--continue`** to reopen the last session, on top of `/save` and
-   `/load` (item 7 above).
+6. **`--continue`** to reopen the last session, on top of `/save` and
+   `/load` (item 4 above).
 
-Suggested order: 2, then 1 through item 3 (prompt_toolkit), then 4 and 3;
-5 and 6 are cheap extras.
+Suggested order: 1, then 3 and 2; 4 and 5 are cheap extras.
 
 ## New tools
 
 Each is a `ToolArguments` model, a `Tool` subclass and a line in
-`build_toolbox`. Read-only tools will not need approval (item 2), which is
+`build_toolbox`. Read-only tools will not need approval (item 1), which is
 much of their value. In order:
 
 1. **`search_files(pattern, path, glob)` and `list_files(path, glob)`.**
@@ -142,7 +127,7 @@ deleting or moving files (`rm`, `mv`), and sub-agents.
 
 - **TUI:** a Textual app (`minime-tui`) beside the REPL, with streamed
   Markdown (`Markdown.get_stream()`), tool calls in collapsible panels, a
-  status bar and modal approvals. Best after 3 and 4.
+  status bar and modal approvals.
 - **Prerequisite for any non-REPL interface:** a cooperative stop flag in
   `Agent`. Ctrl-C cannot reach the worker thread a TUI or GUI runs the agent
   in, so cancelling a turn needs the flag plus closing the HTTP stream, and

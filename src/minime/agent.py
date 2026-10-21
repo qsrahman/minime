@@ -184,6 +184,7 @@ class Agent:
                 results: list[dict[str, Any]] = []
                 try:
                     for call in tool_calls:
+                        on_notice(self.toolbox.describe(call))
                         results.append(self.toolbox.execute(call))
                 finally:
                     # Record the step even when Ctrl-C interrupts a tool.

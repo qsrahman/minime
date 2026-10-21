@@ -8,7 +8,7 @@ constructors; there is no global state:
   and exiting, and passes it down.
 - `tools.py` — what every tool shares: `MAX_TOOL_OUTPUT_BYTES`,
   `ToolArguments`, the abstract `Tool` base class and
-  `Toolbox` (`schemas()`, `execute()`). Imports nothing from the project.
+  `Toolbox` (`schemas()`, `describe()`, `execute()`). Imports nothing from the project.
 - `fs.py` — `read_file`, `write_file` and `edit_file` (a `Tool` subclass and
   an arguments model each).
 - `shell.py` — `run_command`, with the plain helper functions that capture,
@@ -30,6 +30,7 @@ constructors; there is no global state:
   type checking.
 - `main.py` — the command line and the composition root: `Repl` (all
   terminal input and output; it dispatches slash commands to `commands.py`),
+  `CommandCompleter` (Tab completion for the prompt),
   `build_toolbox(config)` (the standard tools), `CLI_OPTIONS` and `main()`,
   which loads `Config` from flags, environment and `.env` (reporting invalid
   settings), builds the client, toolbox and agent, and runs `Repl(agent)`.
@@ -111,6 +112,22 @@ constructors; there is no global state:
   tests take one second each because the timeout is a whole number of seconds.
 
 ## Conventions and gotchas
+- The terminal: `Repl` reads lines with a `prompt_toolkit` `PromptSession`
+  (history in `~/.minime_history`, `CommandCompleter`, Esc-Enter for a new
+  line, bracketed paste, and a bottom toolbar from `Repl.status()`) when stdin
+  is a terminal, and with plain `input()` otherwise, which is what the offline
+  REPL tests patch. With `TERM=dumb`, as in the pty tests, `prompt_toolkit`
+  falls back to a plain prompt; `Terminal` sets `HOME` to the workspace so
+  those tests never touch the real history file.
+- Model text is printed raw as it streams and collected in `Repl.answer`;
+  `Repl.end_answer()` (called by `notice()` and at the end of `ask()`) moves
+  the cursor back up over it and prints it again as `rich` Markdown. It counts
+  wrapped screen rows with `rich.cells.cell_len`, and leaves the text raw when
+  stdout is not a terminal, the terminal is dumb, or the text is as tall as
+  the screen (its start has scrolled off and cannot be erased).
+- Before each tool runs, `run_turn` passes `Toolbox.describe(call)` to
+  `on_notice`: the name and the first non-empty string argument in the
+  arguments model's field order, since the model's argument order varies.
 - Adding a tool: in `fs.py`, `shell.py`, `web.py` or a new module beside them,
   write a `ToolArguments` subclass for its parameters and a `Tool` subclass
   with `name`, `arguments_model` and `run(args)`, then add it in

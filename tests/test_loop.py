@@ -16,6 +16,9 @@ from typing import Any, cast
 import httpx2
 import openai
 import pytest
+from prompt_toolkit.completion import CompleteEvent
+from prompt_toolkit.document import Document
+from rich.console import Console
 
 from conftest import (
     Api,
@@ -149,7 +152,7 @@ class TestAnswers:
     ) -> None:
         api.replies = [response_body(message_item("checking"), write("a")), answer()]
         run(api)
-        assert capsys.readouterr().out == "\nchecking\ndone\n\n"
+        assert capsys.readouterr().out == "\nchecking\n[write_file: out.txt]\ndone\n\n"
 
     def test_empty_response_leaves_no_trace(
         self, api: Api, streaming: bool, capsys: pytest.CaptureFixture[str]
@@ -1217,3 +1220,102 @@ class TestNotices:
         repl.notice("one")
         repl.notice("two")
         assert capsys.readouterr().out == "full line\n[one]\n[two]\n"
+
+    def test_answer_is_rerendered_as_markdown_in_a_terminal(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("TERM", "xterm")
+        repl = Repl(cast(Agent, FakeAgent()))
+        repl.console = Console(
+            force_terminal=True, color_system=None, width=40, height=10
+        )
+        repl.write("# Title\nsome **bold** text\n")
+        repl.notice("next")
+        raw, rendered = capsys.readouterr().out.split("\033[2F\033[J")
+        assert raw == "# Title\nsome **bold** text\n"
+        assert "Title" in rendered and "#" not in rendered
+        assert "some bold text" in rendered
+        assert rendered.endswith("[next]\n")
+
+    def test_wrapped_lines_are_counted_as_screen_rows(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("TERM", "xterm")
+        repl = Repl(cast(Agent, FakeAgent()))
+        repl.console = Console(
+            force_terminal=True, color_system=None, width=10, height=10
+        )
+        repl.write("x" * 25)  # three rows, and no newline yet
+        repl.end_answer()
+        assert "x" * 25 + "\n\033[3F\033[J" in capsys.readouterr().out
+
+    def test_answer_taller_than_the_screen_stays_raw(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("TERM", "xterm")
+        repl = Repl(cast(Agent, FakeAgent()))
+        repl.console = Console(
+            force_terminal=True, color_system=None, width=40, height=3
+        )
+        repl.write("# one\ntwo\nthree\n")
+        repl.end_answer()
+        assert capsys.readouterr().out == "# one\ntwo\nthree\n"
+
+    def test_dumb_terminal_gets_raw_text(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("TERM", "dumb")
+        repl = Repl(cast(Agent, FakeAgent()))
+        repl.console = Console(
+            force_terminal=True, color_system=None, width=40, height=10
+        )
+        repl.write("# Title\n")
+        repl.end_answer()
+        assert capsys.readouterr().out == "# Title\n"
+
+
+class TestToolCallNotices:
+    def test_each_call_is_announced_before_it_runs(
+        self, api: Api, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        api.replies = [response_body(write("a"), write("b", "other.txt")), answer()]
+        run(api)
+        out = capsys.readouterr().out
+        assert "[write_file: out.txt]\n[write_file: other.txt]\ndone" in out
+        # Before, not after: the first file did not exist when it was announced.
+        assert out.index("[write_file: out.txt]") < out.index("done")
+
+
+class TestPromptSession:
+    def test_status_shows_model_effort_and_context_use(self, api: Api) -> None:
+        agent = api.agent()
+        repl = Repl(agent)
+        assert repl.status() == f"{agent.model} · effort default"
+        agent.reasoning_effort = "low"
+        api.replies = [
+            response_body(message_item("hi"), input_tokens=1000, cached_tokens=250)
+        ]
+        agent.run_turn("hello")
+        limit = agent.config.max_context_tokens
+        assert repl.status() == (
+            f"{agent.model} · effort low · 1,000/{limit:,} tokens · 25% cached"
+        )
+
+    def test_completes_commands_and_directories_after_cd(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(main, "HISTORY_FILE", tmp_path / "history")
+        (Path.cwd() / "subdir").mkdir()
+        (Path.cwd() / "file.txt").write_text("")
+        completer = Repl(cast(Agent, FakeAgent())).prompt_session().completer
+        assert completer is not None
+
+        def complete(text: str) -> list[str]:
+            return [
+                c.text
+                for c in completer.get_completions(Document(text), CompleteEvent())
+            ]
+
+        assert complete("/mo") == ["/model"]
+        assert complete("/cd su") == ["bdir"]
+        assert complete("why /mo") == []

@@ -154,8 +154,9 @@ def test_ctrl_c_before_the_answer_starts(start: Callable[..., Terminal]) -> None
         "1000 and 1100? Show your reasoning."
     )
     # Nothing is shown while the model reasons, so press Ctrl-C as soon as the
-    # turn has started (Repl.ask prints a blank line), before any text arrives.
-    terminal.expect(r"reasoning\.\r\n\r\n$")
+    # turn has started (Repl.ask prints a blank line), before any text arrives. The prompt
+    # ends its line with "\r\r\n" (prompt_toolkit), not "\r\n".
+    terminal.expect(r"reasoning\.\r*\n\r*\n$")
     terminal.type(CTRL_C)
     terminal.expect(PROMPT_AGAIN, timeout=15)
     assert "still here" in answer(terminal, "Reply with exactly: still here").lower()
