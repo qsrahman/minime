@@ -142,9 +142,14 @@ class Repl:
         self.running = False
         self.last_prompt: str | None = None  # for /retry
         self.draft = ""  # text the next prompt starts with (/edit)
-        self.commands: dict[str, Command] = {
-            name: command for command in standard_commands() for name in command.names
-        }
+        # By name, aliases included: the order /help and the completion menu use.
+        self.commands: dict[str, Command] = dict(
+            sorted(
+                (name, command)
+                for command in standard_commands()
+                for name in command.names
+            )
+        )
         self.console = Console(theme=THEME)
         # Model text since the last notice, re-rendered as Markdown once complete;
         # it also tells whether the cursor is at the start of a line.

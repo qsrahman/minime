@@ -244,7 +244,7 @@ class EffortCommand(Command):
 
 
 def standard_commands() -> list[Command]:
-    """Every command, in the order /help lists them."""
+    """Every command; /help lists them by name."""
     return [
         HelpCommand(),
         ContextCommand(),

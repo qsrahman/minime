@@ -30,19 +30,19 @@ MiniMe starts with a line naming the model and the working directory. At the `�
 
 | Command | Effect |
 | --- | --- |
-| `/help` | List the commands. |
-| `/context` | Show how much of the context limit the last request used, how much of it was cached, the number of turns and the learned bytes per token. |
-| `/model [name]` | Show the model, or switch to another one for the rest of the session. |
-| `/effort [level]` | Show the reasoning effort, or set it: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `default` to leave it to the model. |
 | `/cd <dir>` | Change the working directory. |
-| `/retry` | Send the last prompt again. |
-| `/edit` | Remove the last turn and put its prompt back at the prompt, to change and send again. |
-| `/undo` | Remove the last turn from the conversation. |
-| `/compact` | Replace the conversation with a summary of it, to free space; it is kept unchanged if the summary fails. |
-| `/export [file]` | Save the conversation as Markdown: prompts, answers and one line per tool call. The default file is `minime-<date>-<time>.md` in the working directory. |
-| `/reset` | Start a new conversation without restarting (clears the history). |
 | `/clear` | Clear the screen; the conversation is kept. |
+| `/compact` | Replace the conversation with a summary of it, to free space; it is kept unchanged if the summary fails. |
+| `/context` | Show how much of the context limit the last request used, how much of it was cached, the number of turns and the learned bytes per token. |
+| `/edit` | Remove the last turn and put its prompt back at the prompt, to change and send again. |
+| `/effort [level]` | Show the reasoning effort, or set it: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `default` to leave it to the model. |
 | `/exit`, `/quit` | End the session. |
+| `/export [file]` | Save the conversation as Markdown: prompts, answers and one line per tool call. The default file is `minime-<date>-<time>.md` in the working directory. |
+| `/help` | List the commands. |
+| `/model [name]` | Show the model, or switch to another one for the rest of the session. |
+| `/reset` | Start a new conversation without restarting (clears the history). |
+| `/retry` | Send the last prompt again. |
+| `/undo` | Remove the last turn from the conversation. |
 
 In a terminal the prompt has line editing: Up and Down recall earlier input, kept across sessions in `~/.minime_history`, and a matching earlier prompt is suggested in grey as you type (→ accepts it); typing `/` offers the commands with their descriptions, and Tab completes them, and directories after `/cd`; Esc then Enter starts a new line, Ctrl-X Ctrl-E opens the prompt in your `$EDITOR` for longer text, and pasted text stays one prompt however many lines it has. The line at the bottom shows the model, the reasoning effort and how much of the context limit the last request used, with these keys at the right when the terminal is wide enough. While the agent works, a spinner shows what it is waiting for (the model, or the tool call that is running), for how long, and that Ctrl-C stops it. Each tool call is then listed with how it ended and how long it took, such as `✓ read_file: src/app.py  0.0s` or `✗ run_command: pytest -q  exit 1  2.3s`, one row each, with a long description shortened to fit. Notices are dim, warnings (an interrupted or stopped turn) yellow and errors red; a common API error (no connection, a bad key, an unknown model, a rate limit) is followed by a hint on what to check. The terminal tab's title reads `minime · working…` during a turn, and a turn that took longer than 30 seconds rings the terminal bell when it ends, which most terminals show as a badge or notification. Answers stream as plain text and are redrawn as formatted Markdown once complete, at most 100 columns wide and with headings left-aligned, with code in the terminal's own colours; an answer taller than the screen stays plain, since its start has scrolled away.
 

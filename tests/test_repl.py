@@ -240,6 +240,15 @@ class TestRepl:
             assert f"  {command} " in out
         assert agent.prompts == []
 
+    def test_help_lists_commands_alphabetically(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repl_session(monkeypatch, "/help")
+        names = re.findall(r"^  (/\w+)", capsys.readouterr().out, re.MULTILINE)
+        assert len(names) == len(Repl(cast(Agent, FakeAgent())).commands)
+        assert names == sorted(names)
+        assert names.index("/model") < names.index("/quit") < names.index("/reset")
+
     @pytest.mark.parametrize("tty", [True, False])
     def test_clear_wipes_the_screen_and_keeps_the_history(
         self,
@@ -924,6 +933,14 @@ class TestPromptSession:
         )
         assert completion.text == "/undo"
         assert completion.display_meta_text == "remove the last turn from the history"
+
+    def test_completion_menu_is_alphabetical(self, session: PromptSession[str]) -> None:
+        assert session.completer is not None
+        names = [
+            c.text
+            for c in session.completer.get_completions(Document("/"), CompleteEvent())
+        ]
+        assert names == sorted(names) and "/edit" in names
 
     def test_earlier_prompts_are_suggested(self, session: PromptSession[str]) -> None:
         session.history.append_string("explain the tests")
