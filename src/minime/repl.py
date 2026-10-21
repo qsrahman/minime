@@ -139,13 +139,13 @@ class Repl:
     def __init__(self, agent: Agent) -> None:
         self.agent = agent
         self.running = False
-        self.at_line_start = True
         self.last_prompt: str | None = None  # for /retry
         self.commands: dict[str, Command] = {
             name: command for command in standard_commands() for name in command.names
         }
         self.console = Console(theme=THEME)
-        # Model text since the last notice, re-rendered as Markdown once complete.
+        # Model text since the last notice, re-rendered as Markdown once complete;
+        # it also tells whether the cursor is at the start of a line.
         self.answer = ""
         # Shown while nothing is printed: waiting for the model or a tool.
         self.spinner: Progress | None = None
@@ -181,9 +181,10 @@ class Repl:
                 continue
 
             name, _, arg = line.partition(" ")
-            command = self.commands.get(name.lower())
+            name = name.lower()
+            command = self.commands.get(name)
             if command:
-                self.run_command(name.lower(), command, arg.strip())
+                self.run_command(name, command, arg.strip())
             # A single word starting with "/" is a mistyped command, not a
             # prompt; longer input such as "/usr/bin is missing" still goes
             # to the model.
@@ -281,11 +282,13 @@ class Repl:
             )
             if hint:
                 self.console.print(f"  {hint}", style="dim", highlight=False)
-        self.tool = None
         self.end_answer()
         print()
         self.set_title(TITLE)
-        if time.monotonic() - started > LONG_TURN_SECONDS and self.console.is_terminal:
+        if (
+            time.monotonic() - started > LONG_TURN_SECONDS
+            and self.console.is_interactive
+        ):
             self.console.bell()
 
     def set_title(self, title: str) -> None:
@@ -294,7 +297,7 @@ class Repl:
 
     def terminal_control(self, code: str) -> None:
         """Write an escape code, only to a terminal that understands them."""
-        if self.console.is_terminal and not self.console.is_dumb_terminal:
+        if self.console.is_interactive:
             print(code, end="", flush=True)
 
     def start_spinner(self, label: str) -> None:
@@ -355,7 +358,7 @@ class Repl:
             mark, failure = Text("✗ ", "red"), f"  {failure}"
         duration = f"  {time.monotonic() - started:.1f}s"
         # One row each in a terminal: shorten the description, not the rest.
-        if self.console.is_terminal:
+        if self.console.is_interactive:
             description = self.fit(description, 2 + len(failure) + len(duration))
         line = Text.assemble(
             mark, (description, "dim"), (failure, "red"), (duration, "dim")
@@ -369,22 +372,20 @@ class Repl:
         return fitted.plain
 
     def write(self, text: str) -> None:
-        """Print model text, remembering whether the cursor is at a line start."""
+        """Print model text as it arrives, keeping it for end_answer()."""
         self.stop_spinner()
         print(text, end="", flush=True)
-        if text:
-            self.answer += text
-            self.at_line_start = text.endswith("\n")
+        self.answer += text
 
     def end_answer(self) -> None:
         """Finish the model text printed since the last notice, replacing it
         with its Markdown rendering when the terminal allows."""
         self.stop_spinner()
-        if not self.at_line_start:
+        if self.answer and not self.answer.endswith("\n"):
             self.write("\n")
         text, self.answer = self.answer, ""
         console = self.console
-        if not text.strip() or not console.is_terminal or console.is_dumb_terminal:
+        if not text.strip() or not console.is_interactive:
             return
         rows = sum(
             max(1, math.ceil(cell_len(line.expandtabs()) / console.width))
