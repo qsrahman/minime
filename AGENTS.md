@@ -113,8 +113,11 @@ constructors; there is no global state:
 
 ## Conventions and gotchas
 - The terminal: `Repl` reads lines with a `prompt_toolkit` `PromptSession`
-  (history in `~/.minime_history`, `CommandCompleter`, Esc-Enter for a new
-  line, bracketed paste, and a bottom toolbar from `Repl.status()`) when stdin
+  (history in `~/.minime_history` and `AutoSuggestFromHistory`,
+  `CommandCompleter` with each command's docstring as its menu description,
+  Esc-Enter for a new line, bracketed paste, and a dim bottom toolbar from
+  `Repl.toolbar(width)`: `Repl.status()` plus `KEY_HINTS` at the right edge
+  when they fit) when stdin
   is a terminal, and with plain `input()` otherwise, which is what the offline
   REPL tests patch. With `TERM=dumb`, as in the pty tests, `prompt_toolkit`
   falls back to a plain prompt; `Terminal` sets `HOME` to the workspace so
@@ -131,7 +134,10 @@ constructors; there is no global state:
   in the arguments model's field order, since the model's argument order
   varies. `Repl` shows the running call in its spinner, then prints it with
   ✓ or ✗, why it failed (`exit N`, `timed out`, the message, `interrupted`
-  on Ctrl-C) and how long it took.
+  on Ctrl-C) and how long it took, on one row: in a terminal `Repl.fit`
+  shortens the description (never the outcome) to the width. The spinner
+  label is fitted the same way, leaving room for the elapsed time and its
+  "ctrl-c to stop" hint.
 - `Repl` shows a Rich `Progress` spinner (transient, so it erases itself)
   while nothing is printed: from the start of a turn, after each notice, and
   while a tool runs. Every output path (`write`, `end_answer`, so `notice`)

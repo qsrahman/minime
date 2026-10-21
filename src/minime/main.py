@@ -1,3 +1,4 @@
+import inspect
 import math
 import sys
 import time
@@ -9,6 +10,8 @@ from typing import Any
 
 from openai import OpenAI
 from prompt_toolkit import PromptSession
+from prompt_toolkit.application import get_app
+from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import (
     CompleteEvent,
     Completer,
@@ -38,6 +41,8 @@ from minime.web import WebFetchTool, WebSearchTool
 
 HISTORY_FILE = Path("~/.minime_history")
 PROMPT = "› "
+# Shown at the right of the status bar when there is room.
+KEY_HINTS = "esc ⏎ newline · → accept suggestion · ^D quit"
 # Answers wider than this are hard to read on a wide terminal.
 MAX_ANSWER_WIDTH = 100
 
@@ -61,11 +66,19 @@ def home_relative(path: Path) -> str:
 
 
 class CommandCompleter(Completer):
-    """Completes a command name at the start of the line, and a directory
-    after /cd. (NestedCompleter does neither: its words cannot start with "/".)"""
+    """Completes a command name at the start of the line, shown with its
+    /help text, and a directory after /cd. (NestedCompleter does neither: its
+    words cannot start with "/".)"""
 
-    def __init__(self, names: list[str]) -> None:
-        self.names = WordCompleter(names, ignore_case=True, WORD=True)
+    def __init__(self, commands: dict[str, Command]) -> None:
+        self.names = WordCompleter(
+            list(commands),
+            ignore_case=True,
+            WORD=True,
+            meta_dict={
+                name: inspect.getdoc(command) for name, command in commands.items()
+            },
+        )
         self.directories = PathCompleter(only_directories=True, expanduser=True)
 
     def get_completions(
@@ -145,9 +158,9 @@ class Repl:
         print("Bye.")
 
     def prompt_session(self) -> PromptSession[str]:
-        """Line editing for a terminal: history kept across sessions, Tab
-        completion of commands (and of directories after /cd), Esc then Enter
-        for a new line, and a status bar."""
+        """Line editing for a terminal: history kept across sessions and
+        suggested as you type, completion of commands (and of directories
+        after /cd), Esc then Enter for a new line, and a status bar."""
         bindings = KeyBindings()
 
         @bindings.add("escape", "enter")
@@ -156,12 +169,22 @@ class Repl:
 
         return PromptSession(
             message=[("class:prompt", PROMPT)],
-            style=Style.from_dict({"prompt": "ansicyan bold"}),
+            # The toolbar is dim text rather than the default reverse band.
+            style=Style.from_dict(
+                {"prompt": "ansicyan bold", "bottom-toolbar": "noreverse dim"}
+            ),
             history=FileHistory(HISTORY_FILE.expanduser()),
-            completer=CommandCompleter(list(self.commands)),
+            auto_suggest=AutoSuggestFromHistory(),
+            completer=CommandCompleter(self.commands),
             key_bindings=bindings,
-            bottom_toolbar=self.status,
+            bottom_toolbar=lambda: self.toolbar(get_app().output.get_size().columns),
         )
+
+    def toolbar(self, width: int) -> str:
+        """The status, with the key hints at the right edge if they fit."""
+        status = self.status()
+        gap = width - len(status) - len(KEY_HINTS) - 1
+        return f"{status}{' ' * gap}{KEY_HINTS}" if gap >= 2 else status
 
     def status(self) -> str:
         """The status bar: model, reasoning effort and context use."""
@@ -226,10 +249,12 @@ class Repl:
             SpinnerColumn(style="dim"),
             TextColumn("{task.description}", style="dim", markup=False),
             TimeElapsedColumn(),
+            TextColumn("· ctrl-c to stop", style="dim", markup=False),
             console=self.console,
             transient=True,
         )
-        self.spinner.add_task(label, total=None)
+        # Room for the spinner, elapsed time and hint on the same row.
+        self.spinner.add_task(self.fit(label, 30), total=None)
         self.spinner.start()
 
     def stop_spinner(self) -> None:
@@ -259,9 +284,8 @@ class Repl:
             return
         (description, started), self.tool = self.tool, None
         self.end_answer()
-        line = Text()
         if result.get("ok"):
-            line.append("✓ ", "green").append(description, "dim")
+            mark, failure = Text("✓ ", "green"), ""
         else:
             if result.get("timed_out"):
                 failure = "timed out"
@@ -270,10 +294,21 @@ class Repl:
             else:
                 message = str(result.get("message", "failed"))
                 failure = shorten(message, 60, placeholder=" …")
-            line.append("✗ ", "red").append(description, "dim")
-            line.append(f"  {failure}", "red")
-        line.append(f"  {time.monotonic() - started:.1f}s", "dim")
+            mark, failure = Text("✗ ", "red"), f"  {failure}"
+        duration = f"  {time.monotonic() - started:.1f}s"
+        # One row each in a terminal: shorten the description, not the rest.
+        if self.console.is_terminal:
+            description = self.fit(description, 2 + len(failure) + len(duration))
+        line = Text.assemble(
+            mark, (description, "dim"), (failure, "red"), (duration, "dim")
+        )
         self.console.print(line, highlight=False, soft_wrap=True)
+
+    def fit(self, text: str, reserved: int) -> str:
+        """The text, cut with "…" to fit the console width less reserved columns."""
+        fitted = Text(text)
+        fitted.truncate(max(10, self.console.width - reserved), overflow="ellipsis")
+        return fitted.plain
 
     def write(self, text: str) -> None:
         """Print model text, remembering whether the cursor is at a line start."""

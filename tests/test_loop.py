@@ -17,6 +17,8 @@ from typing import Any, cast
 import httpx2
 import openai
 import pytest
+from prompt_toolkit import PromptSession
+from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 from rich.console import Console
@@ -1377,12 +1379,38 @@ class TestLook:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         repl = interactive_repl(monkeypatch)
+        repl.console.width = 80
         repl.tool_start("run_command: make")
         assert repl.spinner is not None
         assert repl.spinner.tasks[0].description == "run_command: make"
         repl.tool_end("run_command: make", {"ok": True})
         assert repl.spinner.tasks[0].description == "thinking"
         repl.stop_spinner()
+
+    def test_spinner_says_how_to_stop_and_fits_one_row(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repl = interactive_repl(monkeypatch)
+        repl.start_spinner("run_command: " + "x" * 80)
+        assert repl.spinner is not None
+        repl.spinner.refresh()
+        repl.stop_spinner()
+        drawn = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", capsys.readouterr().out)
+        row = next(line for line in drawn.split("\r") if "ctrl-c to stop" in line)
+        assert "…" in row
+        assert len(row.rstrip()) <= 40
+
+    def test_long_tool_line_is_shortened_to_one_row(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repl = interactive_repl(monkeypatch)
+        repl.tool_start("run_command: " + "x" * 80)
+        repl.stop_spinner()
+        repl.tool_end("run_command: " + "x" * 80, {"ok": False, "returncode": 2})
+        repl.stop_spinner()
+        plain = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", capsys.readouterr().out)
+        [line] = re.findall(r"✗ run_command: x+…  exit 2  \d+\.\ds", plain)
+        assert len(line) == 40
 
     @pytest.mark.parametrize(
         ("style", "code"),
@@ -1449,6 +1477,44 @@ class TestBanner:
 
 
 class TestPromptSession:
+    @pytest.fixture
+    def session(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> PromptSession[str]:
+        monkeypatch.setattr(main, "HISTORY_FILE", tmp_path / "history")
+        return Repl(cast(Agent, FakeAgent())).prompt_session()
+
+    def test_commands_are_completed_with_their_help_text(
+        self, session: PromptSession[str]
+    ) -> None:
+        assert session.completer is not None
+        [completion] = session.completer.get_completions(
+            Document("/und"), CompleteEvent()
+        )
+        assert completion.text == "/undo"
+        assert completion.display_meta_text == "remove the last turn from the history"
+
+    def test_earlier_prompts_are_suggested(self, session: PromptSession[str]) -> None:
+        session.history.append_string("explain the tests")
+        assert session.auto_suggest is not None
+        buffer = Buffer(history=session.history)
+        buffer.insert_text("expl")
+        suggestion = session.auto_suggest.get_suggestion(buffer, buffer.document)
+        assert suggestion is not None and suggestion.text == "ain the tests"
+
+    def test_toolbar_is_quiet_with_key_hints_at_the_right(
+        self, session: PromptSession[str], api: Api
+    ) -> None:
+        assert session.style is not None
+        attrs = session.style.get_attrs_for_style_str("class:bottom-toolbar")
+        assert not attrs.reverse and attrs.dim
+        repl = Repl(api.agent())
+        status = repl.status()
+        wide = repl.toolbar(120)
+        assert wide.startswith(status) and wide.endswith(main.KEY_HINTS)
+        assert len(wide) == 119
+        assert repl.toolbar(40) == status  # no room for the hints
+
     def test_prompt_is_a_coloured_arrow(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
