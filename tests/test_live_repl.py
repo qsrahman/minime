@@ -169,20 +169,23 @@ def test_two_quick_ctrl_cs_do_not_crash(start: Callable[..., Terminal]) -> None:
     terminal.type(CTRL_C)
     time.sleep(0.02)
     terminal.type(CTRL_C)
-    # Either both land in the turn, or the second one quits at the prompt;
-    # what must not happen is a traceback.
+    # Either both land in the turn, or the second one reaches the prompt,
+    # where one Ctrl-C only clears the line; what must not happen is a
+    # traceback or quitting.
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline and not re.search(r"› $|Bye\.", terminal.screen):
         terminal.read(0.1)
     assert "Traceback" not in terminal.screen, terminal.screen
-    if "Bye." in terminal.screen:
-        assert terminal.wait_for_exit() == 0
+    assert "Bye." not in terminal.screen
 
 
-@pytest.mark.parametrize("key", [CTRL_C, CTRL_D], ids=["ctrl-c", "ctrl-d"])
+@pytest.mark.parametrize("key", [CTRL_C, CTRL_D], ids=["ctrl-c twice", "ctrl-d"])
 def test_quitting_from_the_prompt(start: Callable[..., Terminal], key: bytes) -> None:
     terminal = start()
     answer(terminal, "Reply with exactly: ok")
+    if key == CTRL_C:  # the first press only clears the line
+        terminal.type(CTRL_C)
+        terminal.expect(r"Press Ctrl-C again[\s\S]*› $")
     terminal.type(key)
     terminal.expect(r"\r\nBye\.")
     assert terminal.wait_for_exit() == 0

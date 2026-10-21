@@ -53,6 +53,12 @@ Finished on the `tui` branch:
   turn, the old title restored on exit, and the bell after a long turn.
 - [x] **Left-aligned headings** (`AnswerMarkdown`).
 - [x] **Friendlier API errors:** a hint under the common ones.
+- [x] **Ctrl-C at the prompt clears the line;** a second press within two
+  seconds quits, as in Codex CLI. A stray interrupt between turns is
+  reported instead of ending the program.
+- [x] **Ctrl-X Ctrl-E writes the prompt in `$EDITOR`.**
+- [x] **`/edit`** removes the last turn and puts its prompt back to edit.
+- [x] **`/export [file]`** saves the conversation as Markdown.
 
 ## Look
 
@@ -66,19 +72,24 @@ Smaller improvements to the terminal's appearance, not yet done:
 5. **Confirm `/reset`** when it would discard more than a couple of turns.
 6. **A shorter status bar on narrow terminals:** at 60 columns the token
    count and cache share are cut off.
+7. **`@path` file references,** as in Codex, Gemini CLI and OpenCode: Tab
+   completes the path, and the file's contents (capped like `read_file`) go
+   with the prompt.
+8. **`/undo` and `/edit` restore files too:** `write_file` and `edit_file`
+   keep each file's original once per turn. It cannot undo `run_command`.
+9. **`/diff`:** the working tree's `git diff`, untracked files included.
+10. **Failure detail:** the last lines of a failed command's stderr under its
+    `✗` line, and `/details on|off` for every call's output.
+11. **`/init`:** have the model write an `AGENTS.md` (after main item 4).
+12. **Approval presets** for main item 1, as Codex and Gemini do: ask,
+    auto-edit (file edits allowed, commands ask) and yolo, read-only tools
+    always allowed, switched with `/permissions` and shown in the status bar.
 
 ## Command line
 
 Problems first, since each silently does the wrong thing today:
 
-1. **Ctrl-C at the prompt ends the session and loses the conversation,** and
-   because of the lost-interrupt limitation a second press often lands there.
-   Make Ctrl-C at the prompt clear the line, as `python` and `bash` do (a
-   `prompt_toolkit` key binding), and leave quitting to Ctrl-D, `/exit` and
-   `/quit`. Also catch `KeyboardInterrupt` around the whole loop body: one
-   that arrives while `Repl.ask` prints its "Interrupted" notice now ends the
-   program with a traceback. A few lines.
-2. **Installed copies cannot be configured from a file.** `.env` is read only
+1. **Installed copies cannot be configured from a file.** `.env` is read only
    from the source tree, so after `uv tool install .` only environment
    variables and flags remain. Add a user config file such as
    `~/.config/minime/config.toml` (pydantic-settings'
@@ -87,19 +98,19 @@ Problems first, since each silently does the wrong thing today:
 
 Additions:
 
-3. **One-shot mode:** `minime "explain this error"` or
+2. **One-shot mode:** `minime "explain this error"` or
    `git diff | minime "review this"` runs one turn, prints the answer and
    exits with status 0, or 1 on a `TurnError` or API error. When input is
    piped, show no banner or prompts and send notices to stderr, so stdout
    carries only the answer. A positional argument via pydantic-settings'
    `CliPositionalArg` plus `isatty()` checks; about 40 lines and tests.
-4. **`--version`** from the package metadata (`importlib.metadata`).
-5. **`!command` shell escape:** run `!git status` without asking the model;
+3. **`--version`** from the package metadata (`importlib.metadata`).
+4. **`!command` shell escape:** run `!git status` without asking the model;
    show the output and optionally add it to the conversation.
-6. **`--continue`** to reopen the last session, on top of `/save` and
+5. **`--continue`** to reopen the last session, on top of `/save` and
    `/load` (item 3 above).
 
-Suggested order: 1, then 3 and 2; 4 and 5 are cheap extras.
+Suggested order: 2 and 1; 3 and 4 are cheap extras.
 
 ## New tools
 

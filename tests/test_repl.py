@@ -126,15 +126,65 @@ class TestRepl:
         # Had the loop gone on, "never read" would have been sent as a prompt.
         assert repl_session(monkeypatch, word, "never read").prompts == []
 
-    @pytest.mark.parametrize("signal", [EOFError(), KeyboardInterrupt()])
-    def test_end_of_input_or_ctrl_c_at_the_prompt_quits(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture[str],
-        signal: BaseException,
+    def test_end_of_input_at_the_prompt_quits(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        repl_session(monkeypatch, signal)
+        repl_session(monkeypatch, EOFError(), "never read")
         assert capsys.readouterr().out.count("Bye.") == 1
+
+    def test_one_ctrl_c_at_the_prompt_does_not_quit(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        agent = repl_session(monkeypatch, KeyboardInterrupt(), "still here")
+        assert agent.prompts == ["still here"]
+        assert "Press Ctrl-C again to quit, or Ctrl-D." in capsys.readouterr().out
+
+    def test_two_quick_ctrl_cs_at_the_prompt_quit(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        agent = repl_session(
+            monkeypatch, KeyboardInterrupt(), KeyboardInterrupt(), "never read"
+        )
+        assert agent.prompts == []
+        assert capsys.readouterr().out.endswith("\nBye.\n")
+
+    def test_two_slow_ctrl_cs_do_not_quit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(repl_module, "QUIT_SECONDS", 0)
+        agent = repl_session(
+            monkeypatch, KeyboardInterrupt(), KeyboardInterrupt(), "still here"
+        )
+        assert agent.prompts == ["still here"]
+
+    def test_ctrl_c_outside_a_turn_is_reported_not_fatal(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        def interrupted(self: Repl, prompt: str) -> None:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(Repl, "ask", interrupted)
+        repl_session(monkeypatch, "hello")
+        out = capsys.readouterr().out
+        assert "[Interrupted]" in out and out.endswith("Bye.\n")
+
+    def test_draft_starts_the_next_prompt_only(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        defaults: list[str] = []
+        inputs = ["/exit", "", "hi"]
+
+        class Session:
+            def prompt(self, default: str = "") -> str:
+                defaults.append(default)
+                return inputs.pop()
+
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(Repl, "prompt_session", lambda self: Session())
+        repl = Repl(cast(Agent, FakeAgent()))
+        repl.draft = "edit me"
+        repl.run()
+        assert defaults == ["edit me", "", ""]
 
     def test_prompts_go_to_the_agent_and_answers_are_printed(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -229,7 +279,13 @@ class TestCommands:
     ) -> None:
         repl_session(monkeypatch, "/help")
         out = capsys.readouterr().out
-        for usage in ("/model [name]", "/effort [level]", "/cd <dir>", "/undo"):
+        for usage in (
+            "/model [name]",
+            "/effort [level]",
+            "/cd <dir>",
+            "/undo",
+            "/export [file]",
+        ):
             assert f"  {usage} " in out
 
     def test_command_without_its_argument(
@@ -338,6 +394,59 @@ class TestCommands:
         out = capsys.readouterr().out
         assert out.count("[Last turn removed]") == 2
         assert "[Nothing to undo]" in out
+
+    def test_edit_removes_the_last_turn_and_drafts_its_prompt(
+        self, api: Api, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        api.replies = [answer(), answer()]
+        repl = Repl(api.agent())
+        repl.handle("/edit")
+        assert "[Nothing to edit]" in capsys.readouterr().out
+        repl.ask("one")
+        repl.ask("two\nlines")
+        repl.handle("/edit")
+        assert repl.draft == "two\nlines"
+        assert kinds(repl.agent.context.history) == ["user:one", "message"]
+
+    def test_export_writes_the_conversation_as_markdown(
+        self, api: Api, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        api.replies = [
+            response_body(message_item("Writing it."), write("a")),
+            response_body(
+                call_item(
+                    "read_file",
+                    "b",
+                    path="nope.txt",
+                    start_line=None,
+                    end_line=None,
+                    offset=None,
+                )
+            ),
+            answer("All **done**."),
+        ]
+        repl = Repl(api.agent())
+        repl.handle("/export")
+        assert "[Nothing to export]" in capsys.readouterr().out
+        repl.ask("make\nthe file")
+        repl.handle("/export notes/chat.md")
+        assert "[Conversation exported to notes/chat.md]" in capsys.readouterr().out
+        text = Path("notes/chat.md").read_text()
+        assert text.startswith("# MiniMe conversation, ")
+        assert "\n---\n\n> make\n> the file\n\nWriting it.\n\n" in text
+        assert "- ✓ `write_file: out.txt`\n" in text
+        assert "- ✗ `read_file: nope.txt`\n" in text
+        assert text.endswith("All **done**.\n")
+
+    def test_export_has_a_default_file_name(
+        self, api: Api, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        api.replies = [answer()]
+        repl = Repl(api.agent())
+        repl.ask("hi")
+        repl.handle("/export")
+        [exported] = Path.cwd().glob("minime-*.md")
+        assert re.fullmatch(r"minime-\d{8}-\d{6}\.md", exported.name)
 
     def test_undo_keeps_earlier_turns(
         self, api: Api, monkeypatch: pytest.MonkeyPatch
@@ -843,6 +952,7 @@ class TestPromptSession:
         monkeypatch.setattr(repl_module, "HISTORY_FILE", tmp_path / "history")
         session = Repl(cast(Agent, FakeAgent())).prompt_session()
         assert session.message == [("class:prompt", "› ")]
+        assert session.enable_open_in_editor
         assert session.style is not None
         assert session.style.get_attrs_for_style_str("class:prompt").color == "ansicyan"
 

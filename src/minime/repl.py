@@ -6,7 +6,6 @@ import math
 import sys
 import time
 from collections.abc import Iterator
-from functools import partial
 from pathlib import Path
 from textwrap import shorten
 from typing import Any, ClassVar
@@ -47,7 +46,9 @@ from minime.commands import Command, standard_commands
 HISTORY_FILE = Path("~/.minime_history")
 PROMPT = "› "
 # Shown at the right of the status bar when there is room.
-KEY_HINTS = "esc ⏎ newline · → accept suggestion · ^D quit"
+KEY_HINTS = "esc ⏎ newline · ^X^E editor · → accept suggestion · ^D quit"
+# A second Ctrl-C at the prompt within this many seconds quits.
+QUIT_SECONDS = 2
 # Answers wider than this are hard to read on a wide terminal.
 MAX_ANSWER_WIDTH = 100
 # A turn that took longer rings the bell when it ends, for whoever switched away.
@@ -140,6 +141,7 @@ class Repl:
         self.agent = agent
         self.running = False
         self.last_prompt: str | None = None  # for /retry
+        self.draft = ""  # text the next prompt starts with (/edit)
         self.commands: dict[str, Command] = {
             name: command for command in standard_commands() for name in command.names
         }
@@ -166,41 +168,63 @@ class Repl:
         self.terminal_control("\033[22;0t")  # save the title, restored on exit
         self.set_title(TITLE)
 
-        if sys.stdin.isatty():
-            read_line = self.prompt_session().prompt
-        else:
-            read_line = partial(input, PROMPT)
+        session = self.prompt_session() if sys.stdin.isatty() else None
+        last_ctrl_c = -math.inf
         self.running = True
         while self.running:
             try:
-                line = read_line().strip()
-            except KeyboardInterrupt, EOFError:
-                print()  # Ctrl-C / Ctrl-D leave the cursor on the prompt line
+                if session:
+                    line = session.prompt(default=self.draft).strip()
+                else:
+                    line = input(PROMPT).strip()
+            except EOFError:
+                print()  # Ctrl-D leaves the cursor on the prompt line
                 break
+            except KeyboardInterrupt:
+                # The first Ctrl-C only clears the line, so a stray one (often
+                # meant for the turn that just ended) does not lose the session.
+                if time.monotonic() - last_ctrl_c < QUIT_SECONDS:
+                    print()
+                    break
+                last_ctrl_c = time.monotonic()
+                self.console.print(
+                    "Press Ctrl-C again to quit, or Ctrl-D.", style="dim"
+                )
+                continue
+            finally:
+                self.draft = ""
             if not line:
                 continue
-
-            name, _, arg = line.partition(" ")
-            name = name.lower()
-            command = self.commands.get(name)
-            if command:
-                self.run_command(name, command, arg.strip())
-            # A single word starting with "/" is a mistyped command, not a
-            # prompt; longer input such as "/usr/bin is missing" still goes
-            # to the model.
-            elif line.startswith("/") and " " not in line:
-                self.report(
-                    f"Unknown command: {line}. Type /help to list commands.", "yellow"
-                )
-            else:
-                self.ask(line)
+            try:
+                self.handle(line)
+            except KeyboardInterrupt:
+                # One that lands outside a turn or command, e.g. while an
+                # interruption is being reported.
+                self.notice("Interrupted", "yellow")
         print("Bye.")
         self.terminal_control("\033[23;0t")
+
+    def handle(self, line: str) -> None:
+        """Run a command line, or send the line to the model."""
+        name, _, arg = line.partition(" ")
+        name = name.lower()
+        command = self.commands.get(name)
+        if command:
+            self.run_command(name, command, arg.strip())
+        # A single word starting with "/" is a mistyped command, not a prompt;
+        # longer input such as "/usr/bin is missing" still goes to the model.
+        elif line.startswith("/") and " " not in line:
+            self.report(
+                f"Unknown command: {line}. Type /help to list commands.", "yellow"
+            )
+        else:
+            self.ask(line)
 
     def prompt_session(self) -> PromptSession[str]:
         """Line editing for a terminal: history kept across sessions and
         suggested as you type, completion of commands (and of directories
-        after /cd), Esc then Enter for a new line, and a status bar."""
+        after /cd), Esc then Enter for a new line, Ctrl-X Ctrl-E to write the
+        prompt in $EDITOR, and a status bar."""
         bindings = KeyBindings()
 
         @bindings.add("escape", "enter")
@@ -214,6 +238,7 @@ class Repl:
                 {"prompt": "ansicyan bold", "bottom-toolbar": "noreverse dim"}
             ),
             history=FileHistory(HISTORY_FILE.expanduser()),
+            enable_open_in_editor=True,  # Ctrl-X Ctrl-E opens $EDITOR
             auto_suggest=AutoSuggestFromHistory(),
             completer=CommandCompleter(self.commands),
             key_bindings=bindings,

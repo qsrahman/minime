@@ -126,16 +126,17 @@ class Context:
         """Where each turn, a user message, starts in the history."""
         return [index for index, item in enumerate(self.history) if is_prompt(item)]
 
-    def undo(self) -> bool:
+    def undo(self) -> str | None:
         """Drop the last turn: the last user message and everything after it.
 
-        Returns whether there was one to drop.
+        Returns that message's text, or None if there was no turn to drop.
         """
         starts = self._turn_starts()
         if not starts:
-            return False
+            return None
+        prompt = cast(dict[str, Any], self.history[starts[-1]])["content"]
         del self.history[starts[-1] :]
-        return True
+        return str(prompt)
 
     def turns(self) -> int:
         """How many turns the history holds (a leading summary counts as one)."""

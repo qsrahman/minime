@@ -1,15 +1,19 @@
 """The slash commands typed at the REPL prompt, such as /help or /model."""
 
 import inspect
+import json
 import os
 import sys
 from abc import ABC, abstractmethod
+from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, cast, get_args
+from typing import TYPE_CHECKING, Any, ClassVar, cast, get_args
 
+from openai.types.responses import ResponseFunctionToolCall, ResponseOutputMessage
 from openai.types.shared import ReasoningEffort
 
 if TYPE_CHECKING:
+    from minime.agent import Agent
     from minime.repl import Repl
 
 # The levels /effort accepts: the API's own, plus "default" to send none.
@@ -86,7 +90,21 @@ class UndoCommand(Command):
     names = ("/undo",)
 
     def run(self, repl: Repl, arg: str) -> None:
-        repl.report("Last turn removed" if repl.agent.undo() else "Nothing to undo")
+        undone = repl.agent.undo() is not None
+        repl.report("Last turn removed" if undone else "Nothing to undo")
+
+
+class EditCommand(Command):
+    """remove the last turn and put its prompt back to edit and resend"""
+
+    names = ("/edit",)
+
+    def run(self, repl: Repl, arg: str) -> None:
+        prompt = repl.agent.undo()
+        if prompt is None:
+            repl.report("Nothing to edit")
+        else:
+            repl.draft = prompt
 
 
 class RetryCommand(Command):
@@ -135,6 +153,46 @@ class ContextCommand(Command):
             f"Context: {used}; {agent.context.turns()} turns; "
             f"{bytes_per_token:.1f} bytes per token"
         )
+
+
+class ExportCommand(Command):
+    """save the conversation as Markdown"""
+
+    names = ("/export",)
+    argument = "[file]"
+
+    def run(self, repl: Repl, arg: str) -> None:
+        if not repl.agent.context.history:
+            repl.report("Nothing to export")
+            return
+        path = Path(arg or f"minime-{datetime.now():%Y%m%d-%H%M%S}.md").expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(transcript(repl.agent), encoding="utf-8")
+        repl.report(f"Conversation exported to {path}")
+
+
+def transcript(agent: Agent) -> str:
+    """The conversation as Markdown: each prompt (or summary) quoted, the
+    model's text, and one line per tool call with whether it succeeded."""
+    history = cast(list[Any], agent.context.history)
+    succeeded = {
+        item["call_id"]: json.loads(item["output"]).get("ok", False)
+        for item in history
+        if isinstance(item, dict) and item.get("type") == "function_call_output"
+    }
+    lines = [f"# MiniMe conversation, {datetime.now():%Y-%m-%d %H:%M}", ""]
+    lines += [f"Model: {agent.model}. Working directory: {Path.cwd()}.", ""]
+    for item in history:
+        if isinstance(item, dict) and item.get("role") == "user":
+            quoted = str(item["content"]).replace("\n", "\n> ")
+            lines += ["---", "", f"> {quoted}", ""]
+        elif isinstance(item, ResponseOutputMessage):
+            text = "".join(getattr(part, "text", "") for part in item.content)
+            lines += [text.strip(), ""]
+        elif isinstance(item, ResponseFunctionToolCall):
+            mark = "✓" if succeeded.get(item.call_id) else "✗"
+            lines += [f"- {mark} `{agent.toolbox.describe(item)}`", ""]
+    return "\n".join(lines)
 
 
 class CdCommand(Command):
@@ -194,8 +252,10 @@ def standard_commands() -> list[Command]:
         EffortCommand(),
         CdCommand(),
         RetryCommand(),
+        EditCommand(),
         UndoCommand(),
         CompactCommand(),
+        ExportCommand(),
         ResetCommand(),
         ClearCommand(),
         ExitCommand(),

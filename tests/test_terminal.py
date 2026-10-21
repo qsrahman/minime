@@ -184,12 +184,27 @@ def test_ctrl_c_during_a_command_kills_it_and_returns_to_the_prompt(
     ]
 
 
-@pytest.mark.parametrize("key", [CTRL_C, CTRL_D], ids=["ctrl-c", "ctrl-d"])
+@pytest.mark.parametrize("key", [CTRL_C, CTRL_D], ids=["ctrl-c twice", "ctrl-d"])
 def test_quitting_from_the_prompt(terminal: Terminal, key: bytes) -> None:
+    if key == CTRL_C:  # the first press only clears the line
+        terminal.type(CTRL_C)
+        terminal.expect(r"Press Ctrl-C again[\s\S]*› $")
     terminal.type(key)
     # On a line of its own, not after the "› " the key left the cursor on.
     terminal.expect(r"\r\nBye\.")
     assert terminal.wait_for_exit() == 0
+
+
+def test_one_ctrl_c_at_the_prompt_only_clears_the_line(
+    endpoint: Endpoint, terminal: Terminal
+) -> None:
+    endpoint.script(response_body(message_item("understood")))
+    terminal.type(b"half a thought")
+    terminal.type(CTRL_C)
+    terminal.expect(r"Press Ctrl-C again to quit, or Ctrl-D\.[\s\S]*› $")
+    terminal.type("hello")
+    terminal.expect(r"understood[\s\S]*› $")
+    assert [r["input"][-1]["content"] for r in endpoint.requests] == ["hello"]
 
 
 def test_exit_after_an_interrupted_request(

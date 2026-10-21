@@ -24,7 +24,7 @@ constructors; there is no global state:
   client and tools; it imports only `config`, `context` and `tools`, never
   the concrete tool modules. For the commands it also has `model` and
   `reasoning_effort` (changeable between turns), `last_usage`, `reset()`,
-  `undo()` and `compact()`.
+  `undo()` (returns the removed turn's prompt, for `/edit`) and `compact()`.
 - `commands.py` — the slash commands: the abstract `Command` base class, one
   subclass per command and `standard_commands()`. Imports `Repl` only for
   type checking.
@@ -168,6 +168,15 @@ constructors; there is no global state:
   `Repl.terminal_control` writes such codes only to a non-dumb terminal, so
   tests and pipes see none. An `OpenAIError` that matches `API_ERROR_HINTS`
   gets a dim hint line under the red error.
+- `Repl.run` reads a line (starting from `Repl.draft`, which `/edit` fills,
+  then cleared) and passes it to `Repl.handle`; a `KeyboardInterrupt` from
+  `handle` that no turn or command caught is reported, not fatal. Ctrl-C at
+  the prompt only prints a hint unless it comes within `QUIT_SECONDS` of the
+  previous one, which quits; Ctrl-D quits at once. Two presses typed in one
+  write reach `prompt_toolkit` together and the second is discarded with the
+  abandoned line, so the pty tests wait for the hint before the second.
+- `/export` renders `commands.transcript(agent)`: prompts quoted, model text,
+  and `✓`/`✗` plus `Toolbox.describe` per call from the history.
 - The prompt is `PROMPT` ("› ", cyan in `prompt_toolkit`); the pty tests
   wait for `› $`. The banner is `minime · <model> · <cwd>`, the cwd shortened
   by `home_relative`.

@@ -74,8 +74,9 @@ class Agent:
         self.context.reset()
         self.last_usage = None
 
-    def undo(self) -> bool:
-        """Remove the last turn from the history; returns whether there was one."""
+    def undo(self) -> str | None:
+        """Remove the last turn from the history; returns its prompt, or None
+        if there was no turn."""
         self.last_usage = None
         return self.context.undo()
 

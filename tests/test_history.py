@@ -249,11 +249,11 @@ def test_implausible_ratios_are_bounded(input_tokens: int, expected: float) -> N
 def test_undo_drops_the_last_turn_only() -> None:
     history = [user("one"), output("a", 10), user("two"), output("b", 10)]
     context = Context(list(history))
-    assert context.undo()
+    assert context.undo() == "two"
     assert context.history == history[:2]
-    assert context.undo()
+    assert context.undo() == "one"
     assert context.history == []
-    assert not context.undo()
+    assert context.undo() is None
 
 
 def test_turns_counts_user_messages() -> None:
