@@ -49,6 +49,31 @@ Communicating:
 """
 
 
+# Project instructions, looked for in the working directory in this order.
+PROJECT_FILES = ("AGENTS.md", "CLAUDE.md")
+# A larger file is cut, so it cannot crowd out the conversation.
+MAX_PROJECT_BYTES = 32 * 1024
+
+
+def project_instructions() -> str:
+    """The first project file in the working directory, as a section of the
+    instructions, or "" if there is none."""
+    for name in PROJECT_FILES:
+        path = Path.cwd() / name
+        if not path.is_file():
+            continue
+        data = path.read_bytes()
+        text = data[:MAX_PROJECT_BYTES].decode("utf-8", errors="ignore").strip()
+        if len(data) > MAX_PROJECT_BYTES:
+            text += f"\n[{name} cut at {MAX_PROJECT_BYTES:,} bytes]"
+        return (
+            f"Project instructions, from {name} in the working directory. The "
+            "user keeps them for this project; follow them unless the user "
+            f"says otherwise:\n{text}\n\n"
+        )
+    return ""
+
+
 class TurnError(Exception):
     """A turn that ended without a final answer; completed steps stay in the history."""
 
@@ -80,6 +105,12 @@ class Agent:
         self.last_usage = None
         return self.context.undo()
 
+    def add_note(self, text: str) -> None:
+        """Add a message from the user that the model reads with the next
+        prompt, such as the output of a command the user ran (!command)."""
+        self.context.add_prompt(text)
+        self.last_usage = None
+
     def compact(self, on_notice: Callable[[str], None] = lambda text: None) -> bool:
         """Replace the whole history with a model-written summary of it.
 
@@ -106,10 +137,12 @@ class Agent:
         return True
 
     def _instructions(self) -> str:
-        """The system prompt plus details of the environment, which are kept
-        last so the start of the prompt stays the same for the provider's cache."""
+        """The system prompt, the project's instructions and details of the
+        environment, in that order: the parts that change least come first, so
+        the start of the prompt stays the same for the provider's cache."""
         return (
             f"{SYSTEM_PROMPT}\n"
+            f"{project_instructions()}"
             "Environment:\n"
             f"- Working directory: {Path.cwd()}\n"
             f"- Operating system: {platform.platform()}\n"

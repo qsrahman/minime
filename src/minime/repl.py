@@ -37,11 +37,13 @@ from rich.cells import cell_len
 from rich.console import Console
 from rich.markdown import Heading, Markdown, MarkdownElement
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+from rich.syntax import Syntax
 from rich.text import Text
 from rich.theme import Theme
 
 from minime.agent import Agent, TurnError
 from minime.commands import Command, standard_commands
+from minime.shell import RunCommandArguments, RunCommandTool
 
 HISTORY_FILE = Path("~/.minime_history")
 PROMPT = "› "
@@ -51,6 +53,8 @@ KEY_HINTS = "esc ⏎ newline · ^X^E editor · → accept suggestion · ^D quit"
 QUIT_SECONDS = 2
 # Answers wider than this are hard to read on a wide terminal.
 MAX_ANSWER_WIDTH = 100
+# How many lines of a failed call's output are shown under its line.
+FAILURE_LINES = 4
 # A turn that took longer rings the bell when it ends, for whoever switched away.
 LONG_TURN_SECONDS = 30
 TITLE = "minime"
@@ -214,7 +218,9 @@ class Repl:
         name, _, arg = line.partition(" ")
         name = name.lower()
         command = self.commands.get(name)
-        if command:
+        if line.startswith("!"):
+            self.shell(line[1:].strip())
+        elif command:
             self.run_command(name, command, arg.strip())
         # A single word starting with "/" is a mistyped command, not a prompt;
         # longer input such as "/usr/bin is missing" still goes to the model.
@@ -224,6 +230,60 @@ class Repl:
             )
         else:
             self.ask(line)
+
+    def shell(self, command: str) -> None:
+        """Run a shell command for the user (a line starting with "!"), show
+        its output, and add both to the conversation for the model to see."""
+        if not command:
+            self.report("Usage: !<command>", "yellow")
+            return
+        print()
+        self.tool = (f"$ {command}", time.monotonic())
+        self.start_spinner(f"$ {command}")
+        try:
+            result = RunCommandTool(self.agent.config.command_timeout).run(
+                RunCommandArguments(cmd=command, timeout=None, cwd=None)
+            )
+        except KeyboardInterrupt:
+            self.show_tool({"ok": False, "message": "interrupted"})
+            print()
+            return
+        self.stop_spinner()
+        if result["stdout"]:
+            print(result["stdout"].rstrip("\n"))
+        if result["stderr"]:
+            self.console.print(
+                result["stderr"].rstrip("\n"),
+                style="dim",
+                markup=False,
+                highlight=False,
+            )
+        self.show_tool(result, detail=False)
+        print()
+        if result["timed_out"]:
+            outcome = "it timed out"
+        else:
+            outcome = f"exit code {result['returncode']}"
+        output = "".join(
+            f"\n{name}:\n{result[name].rstrip()}"
+            for name in ("stdout", "stderr")
+            if result[name].strip()
+        )
+        self.agent.add_note(
+            f"I ran this shell command myself ({outcome}):\n$ {command}{output}"
+        )
+
+    def print_code(self, text: str, lexer: str) -> None:
+        """Print code or a diff highlighted in the terminal's own colours."""
+        self.console.print(
+            Syntax(
+                text,
+                lexer,
+                theme=CODE_THEME,
+                background_color="default",
+                word_wrap=True,
+            )
+        )
 
     def prompt_session(self) -> PromptSession[str]:
         """Line editing for a terminal: history kept across sessions and
@@ -368,9 +428,10 @@ class Repl:
         self.show_tool(result)
         self.start_spinner("thinking")
 
-    def show_tool(self, result: dict[str, Any]) -> None:
+    def show_tool(self, result: dict[str, Any], detail: bool = True) -> None:
         """Print the running tool call with how it ended and how long it took:
-        "✓ read_file: x.py  0.1s" or "✗ run_command: pytest  exit 1  2.3s"."""
+        "✓ read_file: x.py  0.1s" or "✗ run_command: pytest  exit 1  2.3s",
+        followed for a failed command by the last lines of its output."""
         if self.tool is None:
             return
         (description, started), self.tool = self.tool, None
@@ -394,6 +455,19 @@ class Repl:
             mark, (description, "dim"), (failure, "red"), (duration, "dim")
         )
         self.console.print(line, highlight=False, soft_wrap=True)
+        output = result.get("stderr") or result.get("stdout")
+        if detail and not result.get("ok") and output:
+            lines = [line for line in output.splitlines() if line.strip()]
+            for text in lines[-FAILURE_LINES:]:
+                if self.console.is_interactive:
+                    text = self.fit(text, 4)
+                self.console.print(
+                    f"    {text}",
+                    style="dim",
+                    markup=False,
+                    highlight=False,
+                    soft_wrap=True,
+                )
 
     def fit(self, text: str, reserved: int) -> str:
         """The text, cut with "…" to fit the console width less reserved columns."""

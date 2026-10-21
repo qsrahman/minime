@@ -8,18 +8,8 @@ Ideas for later, roughly in order of value for effort.
    the model as a tool result. `/approve on|off` turns it off for trusted
    sessions. Matters more now that the tools are not confined to a workspace.
    Each call is already announced before it runs (`Toolbox.describe`).
-2. **Mark `test_ctrl_c_while_an_answer_streams` as a non-strict xfail.** It
-   fails on most gpt-5.4-mini runs because pydantic-core loses the interrupt
-   (see the known limitation in `AGENTS.md`).
-3. **`/save <file>` and `/load <file>`.** History mixes plain dicts and SDK
+2. **`/save <file>` and `/load <file>`.** History mixes plain dicts and SDK
    objects, so saving needs `model_dump()`.
-4. **Load project instructions.** Read `AGENTS.md` (or `CLAUDE.md`) from the
-   working directory and append it to the instructions, after the static
-   prompt and before or with the Environment section, so the cached prefix
-   stays the same. Every major coding agent does this to pick up a project's
-   build commands and conventions. Decide whether to look in parent
-   directories too, and cap its size so a large file cannot crowd out the
-   history.
 
 ## Done
 
@@ -59,6 +49,14 @@ Finished on the `tui` branch:
 - [x] **Ctrl-X Ctrl-E writes the prompt in `$EDITOR`.**
 - [x] **`/edit`** removes the last turn and puts its prompt back to edit.
 - [x] **`/export [file]`** saves the conversation as Markdown.
+- [x] **Project instructions:** `AGENTS.md` (or `CLAUDE.md`) in the working
+  directory goes into the instructions, before the Environment section.
+- [x] **`!command`** runs a shell command; its output is shown and added to
+  the conversation.
+- [x] **Failure detail:** the last lines of a failed command's output under
+  its `✗` line.
+- [x] **`/diff`:** staged and unstaged changes, and untracked files.
+- [x] **`test_ctrl_c_while_an_answer_streams` is a non-strict xfail.**
 
 ## Look
 
@@ -77,11 +75,10 @@ Smaller improvements to the terminal's appearance, not yet done:
    with the prompt.
 8. **`/undo` and `/edit` restore files too:** `write_file` and `edit_file`
    keep each file's original once per turn. It cannot undo `run_command`.
-9. **`/diff`:** the working tree's `git diff`, untracked files included.
-10. **Failure detail:** the last lines of a failed command's stderr under its
-    `✗` line, and `/details on|off` for every call's output.
-11. **`/init`:** have the model write an `AGENTS.md` (after main item 4).
-12. **Approval presets** for main item 1, as Codex and Gemini do: ask,
+9. **`/init`:** have the model write an `AGENTS.md` for the project.
+10. **`/details on|off`:** show every tool call's output, not only the end of
+    a failed command's.
+11. **Approval presets** for main item 1, as Codex and Gemini do: ask,
     auto-edit (file edits allowed, commands ask) and yolo, read-only tools
     always allowed, switched with `/permissions` and shown in the status bar.
 
@@ -105,12 +102,10 @@ Additions:
    carries only the answer. A positional argument via pydantic-settings'
    `CliPositionalArg` plus `isatty()` checks; about 40 lines and tests.
 3. **`--version`** from the package metadata (`importlib.metadata`).
-4. **`!command` shell escape:** run `!git status` without asking the model;
-   show the output and optionally add it to the conversation.
-5. **`--continue`** to reopen the last session, on top of `/save` and
-   `/load` (item 3 above).
+4. **`--continue`** to reopen the last session, on top of `/save` and
+   `/load` (item 2 above).
 
-Suggested order: 2 and 1; 3 and 4 are cheap extras.
+Suggested order: 2 and 1; 3 is a cheap extra.
 
 ## New tools
 

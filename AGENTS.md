@@ -24,7 +24,9 @@ constructors; there is no global state:
   client and tools; it imports only `config`, `context` and `tools`, never
   the concrete tool modules. For the commands it also has `model` and
   `reasoning_effort` (changeable between turns), `last_usage`, `reset()`,
-  `undo()` (returns the removed turn's prompt, for `/edit`) and `compact()`.
+  `undo()` (returns the removed turn's prompt, for `/edit`), `add_note()`
+  (a user message with no answer, e.g. a `!command`'s output) and
+  `compact()`.
 - `commands.py` — the slash commands: the abstract `Command` base class, one
   subclass per command and `standard_commands()`. Imports `Repl` only for
   type checking.
@@ -32,7 +34,8 @@ constructors; there is no global state:
   dispatches slash commands to `commands.py`), `CommandCompleter`,
   `AnswerMarkdown`, `home_relative` and the look-and-feel constants
   (`PROMPT`, `THEME`, `KEY_HINTS`, `API_ERROR_HINTS`, …). The only module
-  that imports `prompt_toolkit` or `rich`; it uses `agent` and `commands`.
+  that imports `prompt_toolkit` or `rich`; it uses `agent`, `commands` and
+  `shell` (`RunCommandTool`, for `!command` lines).
 - `main.py` — the command line and the composition root:
   `build_toolbox(config)` (the standard tools), `CLI_OPTIONS` and `main()`,
   which loads `Config` from flags, environment and `.env` (reporting invalid
@@ -175,6 +178,15 @@ constructors; there is no global state:
   previous one, which quits; Ctrl-D quits at once. Two presses typed in one
   write reach `prompt_toolkit` together and the second is discarded with the
   abandoned line, so the pty tests wait for the hint before the second.
+- A line starting with `!` runs through `Repl.shell`: a `RunCommandTool`
+  with the configured timeout, output printed, then the command and its
+  output added with `Agent.add_note`, so the model sees them with the next
+  prompt (and `/undo` removes them like a turn). The model is not asked.
+- `Repl.show_tool` prints the last `FAILURE_LINES` non-empty lines of a
+  failed call's `stderr` (else `stdout`) under its `✗` line, except for
+  `!command`, whose whole output is already shown.
+- `/diff` runs `git diff HEAD` (`--cached` before the first commit) and
+  lists untracked files; `Repl.print_code` highlights it in `CODE_THEME`.
 - `/export` renders `commands.transcript(agent)`: prompts quoted, model text,
   and `✓`/`✗` plus `Toolbox.describe` per call from the history.
 - The prompt is `PROMPT` ("› ", cyan in `prompt_toolkit`); the pty tests
@@ -225,8 +237,13 @@ constructors; there is no global state:
   `src/minime/config.py`), wherever the agent is started from. That only
   works for the editable install; a copied install (a plain
   `uv tool install .`) has no `.env` and reads settings from the environment.
-- `SYSTEM_PROMPT` is plain text; `Agent._instructions()` appends an Environment
-  section (working directory, OS, date), and `run_turn` rebuilds it every turn.
+- `SYSTEM_PROMPT` is plain text; `Agent._instructions()` appends the project's
+  instructions (`project_instructions()`: the first of `AGENTS.md` and
+  `CLAUDE.md` in the working directory, cut at `MAX_PROJECT_BYTES`, under a
+  header telling the model to follow them, since the prompt otherwise treats
+  file contents as data) and then an Environment section (working directory,
+  OS, date). `run_turn` rebuilds them every turn, so edits to the file and
+  `/cd` take effect at the next prompt.
 - `read_file` opens files in text mode, so a CRLF file is shown with plain
   `\n`. `edit_file` matches exactly first and, only if that fails on a CRLF
   file, converts `old_content` / `new_content` to CRLF; keep the two in step.
@@ -314,8 +331,9 @@ constructors; there is no global state:
   `TypeAdapter.validate_python` (pydantic-core) loses it, Python prints
   "Exception ignored … KeyboardInterrupt" and the answer carries on. It is
   rare on slow streams but frequent on fast ones (5 of 8 live runs on
-  gpt-5.4-mini failed `test_ctrl_c_while_an_answer_streams`); each press is
-  an independent chance, so pressing it again normally stops the answer.
+  gpt-5.4-mini failed `test_ctrl_c_while_an_answer_streams`, which is
+  therefore a non-strict xfail); each press is an independent chance, so
+  pressing it again normally stops the answer.
 - `.env` is gitignored but present locally, overriding the model and base URL to a
   local OpenAI-compatible endpoint. It is read by `Config` only and is not
   exported to `os.environ`. Do not print or commit secrets.

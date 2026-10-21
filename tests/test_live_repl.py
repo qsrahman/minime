@@ -97,6 +97,10 @@ def test_memory_and_reset(start: Callable[..., Terminal]) -> None:
     assert "biscuit" not in screen.lower()
 
 
+# pydantic-core loses the interrupt when it lands while a stream event is being
+# validated (see the known limitation in AGENTS.md); on fast models that is
+# most runs. Not strict: it passes whenever the interrupt survives.
+@pytest.mark.xfail(strict=False, reason="pydantic-core can lose the Ctrl-C")
 def test_ctrl_c_while_an_answer_streams(start: Callable[..., Terminal]) -> None:
     terminal = start()
     terminal.type("Count from 1 to 500, one number per line, with no other text.")

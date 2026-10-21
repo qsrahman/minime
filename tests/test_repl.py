@@ -5,6 +5,8 @@ colours, titles) and how input is read and dispatched to the commands.
 """
 
 import re
+import shutil
+import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -457,6 +459,74 @@ class TestCommands:
         [exported] = Path.cwd().glob("minime-*.md")
         assert re.fullmatch(r"minime-\d{8}-\d{6}\.md", exported.name)
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX shell")
+    def test_shell_command_output_is_shown_and_kept_for_the_model(
+        self, api: Api, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        api.replies = [answer()]
+        repl = Repl(api.agent())
+        repl.handle("!echo hi")
+        out = capsys.readouterr().out
+        assert re.fullmatch(r"\nhi\n✓ \$ echo hi  \d+\.\ds\n\n", out)
+        assert api.requests == []  # the model is not asked
+        repl.ask("what did it print?")
+        assert kinds(api.requests[0]["input"]) == [
+            "user:I ran this shell command myself (exit code 0):\n$ echo hi\nstdout:\nhi",
+            "user:what did it print?",
+        ]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX shell")
+    def test_failed_shell_command_shows_stderr_once(
+        self, api: Api, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repl = Repl(api.agent())
+        repl.handle("!echo oops >&2; exit 2")
+        out = capsys.readouterr().out
+        assert out.count("\noops\n") == 1  # the output line, not the command
+        assert re.search(r"✗ \$ echo oops >&2; exit 2  exit 2  \d+\.\ds", out)
+        [note] = repl.agent.context.history
+        assert note["content"].startswith(
+            "I ran this shell command myself (exit code 2)"
+        )
+        assert note["content"].endswith("stderr:\noops")
+
+    def test_bare_bang_shows_usage(
+        self, api: Api, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repl = Repl(api.agent())
+        repl.handle("!")
+        assert "[Usage: !<command>]" in capsys.readouterr().out
+        assert repl.agent.context.history == []
+
+    @pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+    def test_diff_shows_changes_and_untracked_files(
+        self, api: Api, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        def git(*args: str) -> None:
+            subprocess.run(
+                ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                check=True,
+                capture_output=True,
+            )
+
+        repl = Repl(api.agent())
+        repl.handle("/diff")
+        assert "[Not a git repository]" in capsys.readouterr().out
+        git("init", "-q")
+        repl.handle("/diff")
+        assert "[No changes]" in capsys.readouterr().out
+        Path("a.txt").write_text("old\n")
+        git("add", "a.txt")
+        repl.handle("/diff")  # staged, before the first commit
+        assert "+old" in capsys.readouterr().out
+        git("commit", "-q", "-m", "first")
+        Path("a.txt").write_text("new\n")
+        Path("new file.txt").write_text("x")
+        repl.handle("/diff")
+        out = capsys.readouterr().out
+        assert "-old" in out and "+new" in out
+        assert "[Untracked: new file.txt]" in out
+
     def test_undo_keeps_earlier_turns(
         self, api: Api, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -662,6 +732,32 @@ class TestToolCallLines:
         assert re.search(
             rf"\n✗ run_command: {cmd}  {failure}  \d+\.\ds\n", capsys.readouterr().out
         )
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX shell")
+    def test_a_failed_command_shows_the_end_of_its_output(
+        self, api: Api, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cmd = "for i in 1 2 3 4 5 6; do echo line $i >&2; done; exit 1"
+        api.replies = [
+            response_body(
+                call_item("run_command", "c", cmd=cmd, timeout=None, cwd=None)
+            ),
+            answer(),
+        ]
+        run(api)
+        out = capsys.readouterr().out
+        assert re.search(
+            r"exit 1  \d+\.\ds\n    line 3\n    line 4\n    line 5\n    line 6\ndone",
+            out,
+        )
+
+    def test_a_successful_call_shows_no_output(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repl = Repl(cast(Agent, FakeAgent()))
+        repl.tool_start("run_command: ls")
+        repl.tool_end("run_command: ls", {"ok": True, "stdout": "a\nb", "stderr": ""})
+        assert "    a" not in capsys.readouterr().out
 
     def test_a_tool_error_shows_its_message_shortened(
         self, capsys: pytest.CaptureFixture[str]

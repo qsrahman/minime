@@ -3,6 +3,7 @@
 import inspect
 import json
 import os
+import subprocess
 import sys
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -195,6 +196,36 @@ def transcript(agent: Agent) -> str:
     return "\n".join(lines)
 
 
+class DiffCommand(Command):
+    """show the uncommitted changes (git diff)"""
+
+    names = ("/diff",)
+
+    def run(self, repl: Repl, arg: str) -> None:
+        def git(*args: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(["git", *args], capture_output=True, text=True)
+
+        if git("rev-parse", "--is-inside-work-tree").returncode:
+            repl.report("Not a git repository")
+            return
+        # Staged and unstaged changes together; before the first commit there
+        # is no HEAD to compare with, so only what is staged.
+        has_head = git("rev-parse", "--verify", "--quiet", "HEAD").returncode == 0
+        diff = git("diff", "HEAD" if has_head else "--cached").stdout
+        untracked = git(
+            "ls-files", "--others", "--exclude-standard"
+        ).stdout.splitlines()
+        if not diff and not untracked:
+            repl.report("No changes")
+            return
+        if diff:
+            repl.print_code(diff, "diff")
+        if untracked:
+            repl.report(f"Untracked: {', '.join(untracked)}")
+        else:
+            print()
+
+
 class CdCommand(Command):
     """change the working directory"""
 
@@ -255,6 +286,7 @@ def standard_commands() -> list[Command]:
         EditCommand(),
         UndoCommand(),
         CompactCommand(),
+        DiffCommand(),
         ExportCommand(),
         ResetCommand(),
         ClearCommand(),
