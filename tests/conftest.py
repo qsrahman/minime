@@ -20,15 +20,6 @@ from minime.agent import Agent
 from minime.context import Context
 from minime.main import build_toolbox
 
-# Texts the agent puts into history, checked by the tests.
-OMITTED_TOOL_OUTPUT = (
-    "[Tool output omitted to fit the context budget; "
-    "call the tool again if it is still needed.]"
-)
-SUMMARY_MARKER = (
-    "[Summary of the earlier conversation, which was removed to save space]"
-)
-
 ENV_VARS = (
     "OPENAI_API_KEY",
     "OPENAI_MODEL",

@@ -17,6 +17,16 @@ DEFAULT_TOKENS_PER_BYTE = 0.25
 # provider's prompt cache; cutting further leaves many requests before the next.
 TRIM_TARGET = 0.75
 
+# The text that stands in for a dropped summary or tool output; the tests
+# import it rather than repeating it.
+SUMMARY_MARKER = (
+    "[Summary of the earlier conversation, which was removed to save space]"
+)
+OMITTED_TOOL_OUTPUT = (
+    "[Tool output omitted to fit the context budget; "
+    "call the tool again if it is still needed.]"
+)
+
 
 def json_bytes(value: object) -> int:
     return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
@@ -95,8 +105,7 @@ class Context:
         summary = summary.strip()
         message: EasyInputMessageParam = {
             "role": "user",
-            "content": "[Summary of the earlier conversation, which was removed "
-            f"to save space]\n{summary}",
+            "content": f"{SUMMARY_MARKER}\n{summary}",
         }
         if not summary or json_bytes([message, *self.history]) > max_bytes:
             return False
@@ -151,10 +160,6 @@ class Context:
         dropped: ResponseInputParam = []
         trimmed = False
         target_bytes = int(max_bytes * TRIM_TARGET)
-        omitted = (
-            "[Tool output omitted to fit the context budget; "
-            "call the tool again if it is still needed.]"
-        )
         while json_bytes(history) > target_bytes:
             starts = self._turn_starts()
             if len(starts) > 1:
@@ -171,13 +176,13 @@ class Context:
                     for item in history
                     if isinstance(item, dict)
                     and item.get("type") == "function_call_output"
-                    and item.get("output") != omitted
+                    and item.get("output") != OMITTED_TOOL_OUTPUT
                 ),
                 None,
             )
             if oldest_output is None:
                 break  # nothing left that can be dropped
-            cast(dict[str, Any], oldest_output)["output"] = omitted
+            cast(dict[str, Any], oldest_output)["output"] = OMITTED_TOOL_OUTPUT
             trimmed = True
 
         # The request itself is over the limit: give up on it.

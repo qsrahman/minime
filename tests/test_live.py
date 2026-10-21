@@ -401,7 +401,7 @@ class TestWriteFile:
             "Café crème — 3,50 € — 咖啡"
         )
 
-    def test_writing_outside_the_workspace(
+    def test_writing_outside_the_working_directory(
         self, make_agent: Callable[..., Agent], tmp_path: Path
     ) -> None:
         outside = tmp_path.parent / f"{tmp_path.name}-outside.txt"
@@ -674,7 +674,7 @@ class TestRunCommand:
         assert any(call.get("cwd") for call in calls(turn, "run_command"))
         assert turn.says("here.txt")
 
-    def test_working_directory_outside_the_workspace(
+    def test_cwd_outside_the_working_directory(
         self, make_agent: Callable[..., Agent], tmp_path: Path
     ) -> None:
         turn = Turn(

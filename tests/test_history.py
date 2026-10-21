@@ -3,8 +3,13 @@ from typing import Any
 
 import pytest
 
-from conftest import OMITTED_TOOL_OUTPUT, SUMMARY_MARKER
-from minime.context import TRIM_TARGET, Context, json_bytes
+from minime.context import (
+    OMITTED_TOOL_OUTPUT,
+    SUMMARY_MARKER,
+    TRIM_TARGET,
+    Context,
+    json_bytes,
+)
 
 NO_LIMIT = 10**9
 
@@ -180,14 +185,11 @@ def test_many_long_turns_are_kept_when_they_fit() -> None:
     assert len(history) == 200
 
 
-MARKER = "[Summary of the earlier conversation, which was removed to save space]"
-
-
 def test_summary_goes_first_with_its_marker() -> None:
     context = Context([user("now")])
     context.add_summary("  Earlier: the user asked for X.\n", NO_LIMIT)
     assert context.history == [
-        user(f"{MARKER}\nEarlier: the user asked for X."),
+        user(f"{SUMMARY_MARKER}\nEarlier: the user asked for X."),
         user("now"),
     ]
 
@@ -201,7 +203,7 @@ def test_empty_summary_is_left_out(text: str) -> None:
 
 def test_summary_that_would_not_fit_is_left_out() -> None:
     context = Context([user("now")])
-    room = json_bytes([user(f"{MARKER}\nshort"), user("now")])
+    room = json_bytes([user(f"{SUMMARY_MARKER}\nshort"), user("now")])
     context.add_summary("short", room)
     assert len(context.history) == 2
     context = Context([user("now")])

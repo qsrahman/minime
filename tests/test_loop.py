@@ -18,8 +18,6 @@ import openai
 import pytest
 
 from conftest import (
-    OMITTED_TOOL_OUTPUT,
-    SUMMARY_MARKER,
     Api,
     call_item,
     kinds,
@@ -29,7 +27,7 @@ from conftest import (
 )
 from minime import config, main, shell
 from minime.agent import SUMMARY_REQUEST, SYSTEM_PROMPT, Agent, TurnError
-from minime.context import Context, json_bytes
+from minime.context import OMITTED_TOOL_OUTPUT, SUMMARY_MARKER, Context, json_bytes
 from minime.main import Repl, build_toolbox
 
 

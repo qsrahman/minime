@@ -111,7 +111,9 @@ class TestReadFile:
         with pytest.raises(OSError):
             tool.read_file("sub")
 
-    def test_outside_workspace(self, tool: Tools, workspace: Path) -> None:
+    def test_path_outside_the_working_directory(
+        self, tool: Tools, workspace: Path
+    ) -> None:
         (workspace.parent / "x.txt").write_text("outside\n")
         assert tool.read_file("../x.txt")["content"] == "outside\n"
 
@@ -311,7 +313,9 @@ class TestWriteFile:
         tool.write_file("empty.txt", "")
         assert (workspace / "empty.txt").read_text() == ""
 
-    def test_outside_workspace(self, tool: Tools, workspace: Path) -> None:
+    def test_path_outside_the_working_directory(
+        self, tool: Tools, workspace: Path
+    ) -> None:
         tool.write_file("../escape.txt", "x")
         assert (workspace.parent / "escape.txt").read_text() == "x"
 
@@ -462,7 +466,9 @@ class TestEditFile:
         with pytest.raises(FileNotFoundError):
             tool.edit_file("missing.txt", "a", "b")
 
-    def test_outside_workspace(self, tool: Tools, workspace: Path) -> None:
+    def test_path_outside_the_working_directory(
+        self, tool: Tools, workspace: Path
+    ) -> None:
         (workspace.parent / "x.txt").write_text("a")
         tool.edit_file("../x.txt", "a", "b")
         assert (workspace.parent / "x.txt").read_text() == "b"

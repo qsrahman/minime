@@ -136,7 +136,9 @@ class TestRunCommand:
             workspace.resolve() / "sub"
         )
 
-    def test_cwd_outside_the_workspace(self, tool: Tools, workspace: Path) -> None:
+    def test_cwd_outside_the_working_directory(
+        self, tool: Tools, workspace: Path
+    ) -> None:
         assert tool.run_command("pwd", cwd="..")["stdout"].strip() == str(
             workspace.resolve().parent
         )
