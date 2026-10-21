@@ -148,6 +148,15 @@ constructors; there is no global state:
   background, so it suits light and dark terminals. The redrawn answer is at
   most `MAX_ANSWER_WIDTH` (100) columns wide; the row count for erasing the
   raw text still uses the full terminal width, at which it was printed.
+- Answers render through `AnswerMarkdown`, whose `LeftHeading` aligns every
+  heading left (Rich centres `# H1`).
+- `Repl.ask` sets the terminal title to `minime · working…` for the turn
+  and rings the bell after one longer than `LONG_TURN_SECONDS`; `run()`
+  saves the previous title on xterm's title stack (`CSI 22;0 t`) and
+  restores it on exit (`CSI 23;0 t`); terminals without one ignore both.
+  `Repl.terminal_control` writes such codes only to a non-dumb terminal, so
+  tests and pipes see none. An `OpenAIError` that matches `API_ERROR_HINTS`
+  gets a dim hint line under the red error.
 - The prompt is `PROMPT` ("› ", cyan in `prompt_toolkit`); the pty tests
   wait for `› $`. The banner is `minime · <model> · <cwd>`, the cwd shortened
   by `home_relative`.

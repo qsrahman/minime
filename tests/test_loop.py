@@ -1453,6 +1453,17 @@ class TestLook:
         assert len(lines) == 3
         assert max(len(line.rstrip()) for line in lines) <= 100
 
+    def test_headings_are_left_aligned(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repl = interactive_repl(monkeypatch)
+        repl.write("# Title\n\n## Sub\n")
+        repl.end_answer()
+        rendered = re.sub(r"\x1b\[[0-9;]*m", "", capsys.readouterr().out)
+        rendered = rendered.split("\x1b[J", 1)[1]
+        assert rendered.startswith("Title ")
+        assert "\nSub " in rendered
+
     def test_code_has_no_background(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -1462,6 +1473,95 @@ class TestLook:
         rendered = capsys.readouterr().out.split("\x1b[J", 1)[1]
         assert "print" in rendered
         assert not re.search(r"\x1b\[[0-9;]*(4\d|48;)", rendered)  # no background
+
+
+def status_error(kind: type[openai.APIStatusError], status: int) -> Exception:
+    request = httpx2.Request("POST", "http://localhost/v1/responses")
+    return kind("nope", response=httpx2.Response(status, request=request), body=None)
+
+
+class TestFinishing:
+    def test_title_says_working_during_a_turn(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repl = interactive_repl(monkeypatch)
+        repl.ask("hi")
+        out = capsys.readouterr().out
+        working = out.index("\x1b]0;minime · working…\x07")
+        assert working < out.index("answer to hi") < out.index("\x1b]0;minime\x07")
+        assert "\a" not in out.replace("\x07", "")  # a short turn rings no bell
+
+    def test_long_turn_rings_the_bell(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(main, "LONG_TURN_SECONDS", -1)
+        repl = interactive_repl(monkeypatch)
+        repl.ask("hi")
+        assert capsys.readouterr().out.endswith("\x1b]0;minime\x07\x07")
+
+    def test_session_saves_and_restores_the_title(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("TERM", "xterm")
+        monkeypatch.setattr(
+            main, "Console", lambda **kwargs: Console(force_terminal=True, **kwargs)
+        )
+        repl_session(monkeypatch)
+        out = capsys.readouterr().out
+        assert "\x1b[22;0t\x1b]0;minime\x07" in out
+        assert out.endswith("Bye.\n\x1b[23;0t")
+
+    def test_no_title_outside_a_terminal(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repl_session(monkeypatch, "hi")
+        assert "\x1b" not in capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        ("error", "hint"),
+        [
+            (
+                openai.APIConnectionError(
+                    request=httpx2.Request("POST", "http://localhost/v1/responses")
+                ),
+                "OPENAI_BASE_URL",
+            ),
+            (
+                openai.APITimeoutError(
+                    request=httpx2.Request("POST", "http://localhost/v1/responses")
+                ),
+                "OPENAI_BASE_URL",
+            ),
+            (status_error(openai.AuthenticationError, 401), "OPENAI_API_KEY"),
+            (status_error(openai.PermissionDeniedError, 403), "access to the model"),
+            (status_error(openai.NotFoundError, 404), "/model"),
+            (status_error(openai.RateLimitError, 429), "quota"),
+            (status_error(openai.InternalServerError, 500), "/retry"),
+        ],
+    )
+    def test_api_errors_come_with_a_hint(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        error: Exception,
+        hint: str,
+    ) -> None:
+        def fail(*args: Any, **kwargs: Any) -> None:
+            raise error
+
+        agent = FakeAgent()
+        monkeypatch.setattr(agent, "run_turn", fail)
+        Repl(cast(Agent, agent)).ask("hi")
+        lines = capsys.readouterr().out.split("\n")
+        error_line = next(i for i, line in enumerate(lines) if "Agent error" in line)
+        assert lines[error_line + 1].startswith("  ")
+        assert hint in lines[error_line + 1]
+
+    def test_other_errors_have_no_hint(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        Repl(cast(Agent, FakeAgent())).ask("explode")
+        assert capsys.readouterr().out == "\n[Agent error: RuntimeError: boom]\n\n"
 
 
 class TestBanner:

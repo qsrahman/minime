@@ -49,6 +49,10 @@ Finished on the `tui` branch:
   right edge when they fit.
 - [x] **Tool lines and the spinner kept to one row,** the description
   shortened; the spinner says "ctrl-c to stop".
+- [x] **Terminal title and a finished signal:** `minime · working…` during a
+  turn, the old title restored on exit, and the bell after a long turn.
+- [x] **Left-aligned headings** (`AnswerMarkdown`).
+- [x] **Friendlier API errors:** a hint under the common ones.
 
 ## Look
 
@@ -59,15 +63,8 @@ Smaller improvements to the terminal's appearance, not yet done:
 3. **Diffs for `edit_file` and `write_file`** under their lines; best with
    approvals (item 1).
 4. **Clickable paths** in tool lines (OSC-8 hyperlinks).
-5. **Terminal title and a finished signal:** `minime · working…` as the tab
-   title during a turn; ring the bell after a turn longer than about 30 s.
-6. **Left-aligned headings:** Rich centres `# H1` in a box; a small
-   `Markdown` subclass could draw headings left-aligned and bold.
-7. **Friendlier API errors:** a dim hint under the red line for the common
-   cases (connection: check `OPENAI_BASE_URL`; 401: the API key; unknown
-   model: `/model`).
-8. **Confirm `/reset`** when it would discard more than a couple of turns.
-9. **A shorter status bar on narrow terminals:** at 60 columns the token
+5. **Confirm `/reset`** when it would discard more than a couple of turns.
+6. **A shorter status bar on narrow terminals:** at 60 columns the token
    count and cache share are cut off.
 
 ## Command line

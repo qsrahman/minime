@@ -6,9 +6,18 @@ from collections.abc import Iterator
 from functools import partial
 from pathlib import Path
 from textwrap import shorten
-from typing import Any
+from typing import Any, ClassVar
 
-from openai import OpenAI
+from openai import (
+    APIConnectionError,
+    AuthenticationError,
+    InternalServerError,
+    NotFoundError,
+    OpenAI,
+    OpenAIError,
+    PermissionDeniedError,
+    RateLimitError,
+)
 from prompt_toolkit import PromptSession
 from prompt_toolkit.application import get_app
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
@@ -26,7 +35,7 @@ from prompt_toolkit.styles import Style
 from pydantic import ValidationError
 from rich.cells import cell_len
 from rich.console import Console
-from rich.markdown import Markdown
+from rich.markdown import Heading, Markdown, MarkdownElement
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.text import Text
 from rich.theme import Theme
@@ -45,6 +54,23 @@ PROMPT = "› "
 KEY_HINTS = "esc ⏎ newline · → accept suggestion · ^D quit"
 # Answers wider than this are hard to read on a wide terminal.
 MAX_ANSWER_WIDTH = 100
+# A turn that took longer rings the bell when it ends, for whoever switched away.
+LONG_TURN_SECONDS = 30
+TITLE = "minime"
+
+# What to check for the API errors people commonly hit; the first match wins,
+# so subclasses (APITimeoutError is an APIConnectionError) come first if listed.
+API_ERROR_HINTS: list[tuple[type[OpenAIError], str]] = [
+    (APIConnectionError, "Check the network, and OPENAI_BASE_URL if you set one."),
+    (AuthenticationError, "Check OPENAI_API_KEY."),
+    (PermissionDeniedError, "This API key may not have access to the model."),
+    (NotFoundError, "Check the model name (/model) and OPENAI_BASE_URL."),
+    (
+        RateLimitError,
+        "Rate limit or quota reached: wait, or check the account's usage.",
+    ),
+    (InternalServerError, "The provider failed; /retry in a moment."),
+]
 
 # Plain ANSI colours, which the terminal's own palette adapts to a light or dark
 # background; Rich's defaults put code on a fixed black or dark grey one.
@@ -56,6 +82,20 @@ THEME = Theme(
     }
 )
 CODE_THEME = "ansi_light"  # plain colours; "ansi_dark" uses the bright ones
+
+
+class LeftHeading(Heading):
+    """A heading drawn left-aligned, like the rest of the answer (Rich
+    centres level 1)."""
+
+    LEVEL_ALIGN: ClassVar = {}  # every level falls back to "left"
+
+
+class AnswerMarkdown(Markdown):
+    elements: ClassVar[dict[str, type[MarkdownElement]]] = {
+        **Markdown.elements,
+        "heading_open": LeftHeading,
+    }
 
 
 def home_relative(path: Path) -> str:
@@ -127,6 +167,8 @@ class Repl:
             soft_wrap=True,
         )
         self.console.print("Type /help to list commands.\n", style="dim")
+        self.terminal_control("\033[22;0t")  # save the title, restored on exit
+        self.set_title(TITLE)
 
         if sys.stdin.isatty():
             read_line = self.prompt_session().prompt
@@ -156,6 +198,7 @@ class Repl:
             else:
                 self.ask(line)
         print("Bye.")
+        self.terminal_control("\033[23;0t")
 
     def prompt_session(self) -> PromptSession[str]:
         """Line editing for a terminal: history kept across sessions and
@@ -218,6 +261,8 @@ class Repl:
         without leaving the loop."""
         self.last_prompt = prompt
         print()
+        self.set_title(f"{TITLE} · working…")
+        started = time.monotonic()
         self.start_spinner("thinking")
         try:
             self.agent.run_turn(
@@ -235,9 +280,26 @@ class Repl:
             self.notice("Interrupted; returning to prompt", "yellow")
         except Exception as exc:  # noqa: BLE001
             self.notice(f"Agent error: {type(exc).__name__}: {exc}", "red")
+            hint = next(
+                (hint for kind, hint in API_ERROR_HINTS if isinstance(exc, kind)), None
+            )
+            if hint:
+                self.console.print(f"  {hint}", style="dim", highlight=False)
         self.tool = None
         self.end_answer()
         print()
+        self.set_title(TITLE)
+        if time.monotonic() - started > LONG_TURN_SECONDS and self.console.is_terminal:
+            self.console.bell()
+
+    def set_title(self, title: str) -> None:
+        """Set the terminal window or tab title."""
+        self.terminal_control(f"\033]0;{title}\007")
+
+    def terminal_control(self, code: str) -> None:
+        """Write an escape code, only to a terminal that understands them."""
+        if self.console.is_terminal and not self.console.is_dumb_terminal:
+            print(code, end="", flush=True)
 
     def start_spinner(self, label: str) -> None:
         """Show a spinner with the label and the time elapsed until something
@@ -338,7 +400,7 @@ class Repl:
         # Move the cursor up to where the text started and erase to the end.
         print(f"\033[{rows}F\033[J", end="")
         console.print(
-            Markdown(text, code_theme=CODE_THEME),
+            AnswerMarkdown(text, code_theme=CODE_THEME),
             width=min(console.width, MAX_ANSWER_WIDTH),
         )
 
